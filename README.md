@@ -14,11 +14,9 @@ Versión v0.1 — etapa de propuesta y diseño (TRL 2–3), previa a la implemen
 
 ## Equipo desarrollador
 
-- 
-- 
-- 
-- 
-- 
+- [Chavez Perez Janlennart](https://github.com/janlennartchp$0)
+- [Llaza Sanchez Joseph](https://github.com/JosephLl06$0)
+- [Menacho Canales John](https://github.com/This-eSau01$0)
 
 ---
 
