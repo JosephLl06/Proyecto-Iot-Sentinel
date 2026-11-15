@@ -1,22 +1,57 @@
 import { useEffect, useMemo, useState } from 'react'
 
-
-
 const initialDevices = [
-
-  { id: 1, name: 'Cámara principal', ip: '192.168.1.101', type: 'Cámara IP', status: 'Conectado', authorized: true, blocked: false, traffic: 1.2 },
-
-  { id: 2, name: 'Sensor de movimiento', ip: '192.168.1.102', type: 'Sensor', status: 'Conectado', authorized: true, blocked: false, traffic: 0.8 },
-
-  { id: 3, name: 'Foco inteligente', ip: '192.168.1.103', type: 'Iluminación', status: 'Conectado', authorized: true, blocked: false, traffic: 0.3 },
-
-  { id: 4, name: 'Enchufe inteligente', ip: '192.168.1.104', type: 'Enchufe IoT', status: 'Desconectado', authorized: true, blocked: false, traffic: 0 },
-
-  { id: 5, name: 'Dispositivo desconocido', ip: '192.168.1.150', type: 'Desconocido', status: 'Conectado', authorized: false, blocked: false, traffic: 8.7 },
-
+  {
+    id: 1,
+    name: 'Cámara principal',
+    ip: '192.168.1.101',
+    type: 'Cámara IP',
+    status: 'Conectado',
+    authorized: true,
+    blocked: false,
+    traffic: 1.2,
+  },
+  {
+    id: 2,
+    name: 'Sensor de movimiento',
+    ip: '192.168.1.102',
+    type: 'Sensor',
+    status: 'Conectado',
+    authorized: true,
+    blocked: false,
+    traffic: 0.8,
+  },
+  {
+    id: 3,
+    name: 'Foco inteligente',
+    ip: '192.168.1.103',
+    type: 'Iluminación',
+    status: 'Conectado',
+    authorized: true,
+    blocked: false,
+    traffic: 0.3,
+  },
+  {
+    id: 4,
+    name: 'Enchufe inteligente',
+    ip: '192.168.1.104',
+    type: 'Enchufe IoT',
+    status: 'Desconectado',
+    authorized: true,
+    blocked: false,
+    traffic: 0,
+  },
+  {
+    id: 5,
+    name: 'Dispositivo desconocido',
+    ip: '192.168.1.150',
+    type: 'Desconocido',
+    status: 'Conectado',
+    authorized: false,
+    blocked: false,
+    traffic: 8.7,
+  },
 ]
-
-
 
 const initialAlerts = [
   {
@@ -54,25 +89,38 @@ const initialAlerts = [
   },
 ]
 
-
-
 const menu = [
-
-  { id: 'dashboard', label: 'Panel principal', icon: '▦' },
-
-  { id: 'devices', label: 'Dispositivos IoT', icon: '▤' },
-
-  { id: 'monitoring', label: 'Monitoreo de red', icon: '⌁' },
-
-  { id: 'alerts', label: 'Alertas de seguridad', icon: '♧' },
-
-  { id: 'history', label: 'Historial de eventos', icon: '◷' },
-
-  { id: 'settings', label: 'Configuración', icon: '⚙' },
-
+  {
+    id: 'dashboard',
+    label: 'Panel principal',
+    icon: '▦',
+  },
+  {
+    id: 'devices',
+    label: 'Dispositivos IoT',
+    icon: '▤',
+  },
+  {
+    id: 'monitoring',
+    label: 'Monitoreo de red',
+    icon: '⌁',
+  },
+  {
+    id: 'alerts',
+    label: 'Alertas de seguridad',
+    icon: '♧',
+  },
+  {
+    id: 'history',
+    label: 'Historial de eventos',
+    icon: '◷',
+  },
+  {
+    id: 'settings',
+    label: 'Configuración',
+    icon: '⚙',
+  },
 ]
-
-
 
 const defaultSettings = {
 
@@ -90,8 +138,6 @@ const defaultSettings = {
 
 }
 
-
-
 function loadSettings() {
 
   try {
@@ -107,8 +153,6 @@ const saved = localStorage.getItem('iotsentinel-settings')
   }
 
 }
-
-
 
 function loadHistory() {
 
@@ -126,8 +170,6 @@ const saved = localStorage.getItem('iotsentinel-history')
 
 }
 
-
-
 function App() {
 
 const [isLoggedIn, setIsLoggedIn] = useState(false)
@@ -139,8 +181,6 @@ const [loginPassword, setLoginPassword] = useState('')
 const [loginError, setLoginError] = useState('')
 
 const [showPassword, setShowPassword] = useState(false)
-
-
 
 const [page, setPage] = useState('dashboard')
 
@@ -164,8 +204,6 @@ const [newIp, setNewIp] = useState('')
 
 const [newType, setNewType] = useState('Sensor')
 
-
-
 const [settings, setSettings] = useState(loadSettings)
 
 const [draftSettings, setDraftSettings] = useState(loadSettings)
@@ -188,16 +226,11 @@ const [historyDeviceFilter, setHistoryDeviceFilter] = useState('Todos')
 const [historyUserFilter, setHistoryUserFilter] = useState('Todos')
 const [historySearch, setHistorySearch] = useState('')
 
-
-
-
 const connected = devices.filter(
 
     d => d.status === 'Conectado' && !d.blocked
 
   ).length
-
-
 
 const authorized = devices.filter(
 
@@ -205,11 +238,7 @@ const authorized = devices.filter(
 
   ).length
 
-
-
 const pendingAlerts = alerts.filter(a => !a.read).length
-
-
 
 const traffic = devices.reduce(
 
@@ -219,8 +248,6 @@ const traffic = devices.reduce(
 
   )
 
-
-
 const visibleDevices = useMemo(() => devices.filter(d => {
 
 const matchesSearch = `${d.name} ${d.ip} ${d.type}`
@@ -228,8 +255,6 @@ const matchesSearch = `${d.name} ${d.ip} ${d.type}`
       .toLowerCase()
 
       .includes(search.toLowerCase())
-
-
 
 const matchesFilter =
 
@@ -240,8 +265,6 @@ const matchesFilter =
       (filter === 'Desconectados' && (d.status === 'Desconectado' || d.blocked)) ||
 
       (filter === 'No autorizados' && !d.authorized)
-
-
 
     return matchesSearch && matchesFilter
 
@@ -290,13 +313,9 @@ const visibleEvents = useMemo(() => {
   historyDeviceFilter, historyUserFilter, historySearch,
 ])
 
-
-
 const pageTitle =
 
     menu.find(item => item.id === page)?.label || 'Panel principal'
-
-
 
 function notify(message) {
 
@@ -307,8 +326,6 @@ function notify(message) {
     window.setTimeout(() => setNotice(''), 3000)
 
   }
-
-
 
 function addEvent(title, detail, metadata = {}) {
     const now = Date.now()
@@ -342,14 +359,11 @@ function addEvent(title, detail, metadata = {}) {
     })
   }
 
-
 // Actualiza la hora mostrada en el monitoreo
 
   useEffect(() => {
 
     if (!monitoringEnabled) return
-
-
 
 const intervalId = window.setInterval(() => {
 
@@ -357,13 +371,9 @@ const intervalId = window.setInterval(() => {
 
     }, settings.refreshInterval * 1000)
 
-
-
     return () => window.clearInterval(intervalId)
 
   }, [settings.refreshInterval, monitoringEnabled])
-
-
 
 // Guarda periódicamente un registro de actividad
 
@@ -372,8 +382,6 @@ const intervalId = window.setInterval(() => {
 const intervalId = window.setInterval(() => {
 
 const now = Date.now()
-
-
 
 const record = {
 
@@ -393,23 +401,17 @@ const record = {
 
       }
 
-
-
       setEvents(current => {
 
 const cutoff =
 
           now - settings.historyRetention * 24 * 60 * 60 * 1000
 
-
-
 const updated = [...current, record].filter(item =>
 
           !item.timestamp || item.timestamp >= cutoff
 
         )
-
-
 
         try {
 
@@ -427,19 +429,13 @@ const updated = [...current, record].filter(item =>
 
         }
 
-
-
         return updated
 
       })
 
-
-
       setLastSave(new Date())
 
     }, settings.saveInterval * 60 * 1000)
-
-
 
     return () => window.clearInterval(intervalId)
 
@@ -455,13 +451,9 @@ const updated = [...current, record].filter(item =>
 
   ])
 
-
-
 function handleLogin(event) {
 
     event.preventDefault()
-
-
 
     if (!loginEmail.trim() || !loginPassword.trim()) {
 
@@ -471,8 +463,6 @@ function handleLogin(event) {
 
     }
 
-
-
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(loginEmail.trim())) {
 
       setLoginError('Ingresa un correo electrónico válido.')
@@ -481,15 +471,11 @@ function handleLogin(event) {
 
     }
 
-
-
     setLoginError('')
 
     setIsLoggedIn(true)
 
     setPage('dashboard')
-
-
 
     addEvent(
 
@@ -500,8 +486,6 @@ function handleLogin(event) {
     )
 
   }
-
-
 
 function handleLogout() {
 
@@ -515,8 +499,6 @@ function handleLogout() {
 
   }
 
-
-
 function changePage(id) {
 
     setPage(id)
@@ -527,8 +509,6 @@ function changePage(id) {
 
   }
 
-
-
 // Bloquea o desbloquea un dispositivo dentro de la aplicación
 
 function toggleBlock(id) {
@@ -537,11 +517,7 @@ const device = devices.find(d => d.id === id)
 
     if (!device) return
 
-
-
 const nextBlocked = !device.blocked
-
-
 
     setDevices(current => current.map(d =>
 
@@ -561,19 +537,13 @@ const nextBlocked = !device.blocked
 
     ))
 
-
-
 const title = nextBlocked
 
       ? 'Dispositivo bloqueado'
 
       : 'Dispositivo desbloqueado'
 
-
-
 const detail = `${device.name} · ${device.ip}`
-
-
 
     setAlerts(current => [{
 
@@ -594,16 +564,12 @@ const detail = `${device.name} · ${device.ip}`
 
     }, ...current])
 
-
-
     addEvent(title, detail, {
       type: 'Control de acceso',
       severity: nextBlocked ? 'Alta' : 'Media',
       deviceType: device.type,
       user: loginEmail,
     })
-
-
 
     notify(
 
@@ -617,15 +583,11 @@ const detail = `${device.name} · ${device.ip}`
 
   }
 
-
-
 function toggleConnection(id) {
 
 const device = devices.find(d => d.id === id)
 
     if (!device) return
-
-
 
     if (device.blocked) {
 
@@ -635,23 +597,17 @@ const device = devices.find(d => d.id === id)
 
     }
 
-
-
 const nextStatus = device.status === 'Conectado'
 
       ? 'Desconectado'
 
       : 'Conectado'
 
-
-
     setDevices(current => current.map(d =>
 
       d.id === id ? { ...d, status: nextStatus } : d
 
     ))
-
-
 
     addEvent(
 
@@ -665,19 +621,13 @@ const nextStatus = device.status === 'Conectado'
 
     )
 
-
-
     notify(`${device.name}: ${nextStatus.toLowerCase()}.`)
 
   }
 
-
-
 function addDevice(event) {
 
     event.preventDefault()
-
-
 
     if (!newName.trim() || !newIp.trim()) {
 
@@ -687,8 +637,6 @@ function addDevice(event) {
 
     }
 
-
-
     if (devices.some(d => d.ip === newIp.trim())) {
 
       notify('Ya existe un dispositivo con esa dirección IP.')
@@ -696,8 +644,6 @@ function addDevice(event) {
       return
 
     }
-
-
 
 const device = {
 
@@ -719,11 +665,7 @@ const device = {
 
     }
 
-
-
     setDevices(current => [...current, device])
-
-
 
     addEvent(
 
@@ -733,8 +675,6 @@ const device = {
 
     )
 
-
-
     setNewName('')
 
     setNewIp('')
@@ -743,13 +683,9 @@ const device = {
 
     setShowForm(false)
 
-
-
     notify('Dispositivo agregado correctamente.')
 
   }
-
-
 
 function markAlertsRead() {
 
@@ -761,13 +697,9 @@ function markAlertsRead() {
 
     })))
 
-
-
     notify('Todas las alertas se marcaron como leídas.')
 
   }
-
-
 
 function updateDraft(key, value) {
 
@@ -781,13 +713,9 @@ function updateDraft(key, value) {
 
   }
 
-
-
 function saveSettings(event) {
 
     event.preventDefault()
-
-
 
     try {
 
@@ -807,11 +735,7 @@ function saveSettings(event) {
 
     }
 
-
-
     setSettings({ ...draftSettings })
-
-
 
     addEvent(
 
@@ -821,13 +745,9 @@ function saveSettings(event) {
 
     )
 
-
-
     notify('Preferencias guardadas correctamente.')
 
   }
-
-
 
 function changeTheme() {
 
@@ -839,8 +759,6 @@ const updated = {
 
     }
 
-
-
     setSettings(updated)
 
     setDraftSettings(current => ({
@@ -850,8 +768,6 @@ const updated = {
       dark: updated.dark,
 
     }))
-
-
 
     try {
 
@@ -871,8 +787,6 @@ const updated = {
 
   }
 
-
-
   if (!isLoggedIn) {
 
     return (
@@ -880,8 +794,6 @@ const updated = {
       <>
 
         <style>{styles}</style>
-
-
 
         <main className="login-screen">
 
@@ -894,8 +806,6 @@ const updated = {
             <h1>IoTSentinel</h1>
 
             <p className="muted">IoT Security Monitor</p>
-
-
 
             <div className="field">
 
@@ -919,13 +829,9 @@ const updated = {
 
             </div>
 
-
-
             <div className="field">
 
               <label htmlFor="loginPassword">Contraseña</label>
-
-
 
               <div className="password-field">
 
@@ -945,8 +851,6 @@ const updated = {
 
                 />
 
-
-
                 <button
 
                   type="button"
@@ -965,15 +869,11 @@ const updated = {
 
             </div>
 
-
-
             {loginError && (
 
               <p className="error-message">{loginError}</p>
 
             )}
-
-
 
             <button
 
@@ -986,8 +886,6 @@ const updated = {
               Ingresar
 
             </button>
-
-
 
             <p className="login-note">
 
@@ -1005,15 +903,11 @@ const updated = {
 
   }
 
-
-
   return (
 
     <>
 
       <style>{styles}</style>
-
-
 
       <div className={`app-shell ${settings.dark ? 'dark-theme' : ''}`}>
 
@@ -1022,8 +916,6 @@ const updated = {
           <div className="brand">
 
             <div className="brand-logo">IS</div>
-
-
 
             <div>
 
@@ -1035,11 +927,7 @@ const updated = {
 
           </div>
 
-
-
           <p className="menu-heading">MENÚ PRINCIPAL</p>
-
-
 
           <nav className="navigation">
 
@@ -1059,8 +947,6 @@ const updated = {
 
                 <span>{item.label}</span>
 
-
-
                 {item.id === 'alerts' && pendingAlerts > 0 && (
 
                   <span className="nav-count">{pendingAlerts}</span>
@@ -1072,8 +958,6 @@ const updated = {
             ))}
 
           </nav>
-
-
 
           <div className="sidebar-bottom">
 
@@ -1093,13 +977,9 @@ const updated = {
 
             </div>
 
-
-
             <div className="profile">
 
               <div className="profile-avatar">AD</div>
-
-
 
               <div className="profile-info">
 
@@ -1108,8 +988,6 @@ const updated = {
                 <small>{loginEmail}</small>
 
               </div>
-
-
 
               <button
 
@@ -1131,8 +1009,6 @@ const updated = {
 
         </aside>
 
-
-
         <main className="main-area">
 
           <header className="topbar">
@@ -1147,8 +1023,6 @@ const updated = {
 
             </div>
 
-
-
             <div className="top-actions">
 
               <span className="system-badge">
@@ -1158,8 +1032,6 @@ const updated = {
                 ACTIVO
 
               </span>
-
-
 
               <button
 
@@ -1175,15 +1047,11 @@ const updated = {
 
               </button>
 
-
-
               <div className="top-avatar">AD</div>
 
             </div>
 
           </header>
-
-
 
           <section className="page-content">
 
@@ -1203,8 +1071,6 @@ const updated = {
 
               </div>
 
-
-
               <div className="environment">
 
                 <span className="green-dot" />
@@ -1214,8 +1080,6 @@ const updated = {
               </div>
 
             </div>
-
-
 
             {page === 'dashboard' && (
 
@@ -1235,8 +1099,6 @@ const updated = {
 
                   />
 
-
-
                   <StatCard
 
                     label="Dispositivos conectados"
@@ -1249,8 +1111,6 @@ const updated = {
 
                   />
 
-
-
                   <StatCard
 
                     label="Dispositivos autorizados"
@@ -1262,8 +1122,6 @@ const updated = {
                     icon="✓"
 
                   />
-
-
 
                   <StatCard
 
@@ -1279,8 +1137,6 @@ const updated = {
 
                 </div>
 
-
-
                 <div className="content-grid">
 
                   <section className="panel">
@@ -1292,8 +1148,6 @@ const updated = {
                       subtitle="Resumen de los dispositivos registrados"
 
                     />
-
-
 
                     <div className="network-summary">
 
@@ -1335,8 +1189,6 @@ const updated = {
 
                       </div>
 
-
-
                       <div className="legend">
 
                         <p>
@@ -1348,8 +1200,6 @@ const updated = {
                           <strong>{connected}</strong>
 
                         </p>
-
-
 
                         <p>
 
@@ -1368,8 +1218,6 @@ const updated = {
                           </strong>
 
                         </p>
-
-
 
                         <p>
 
@@ -1395,8 +1243,6 @@ const updated = {
 
                   </section>
 
-
-
                   <section className="panel">
 
                     <PanelTitle
@@ -1406,8 +1252,6 @@ const updated = {
                       subtitle="Últimos eventos registrados"
 
                     />
-
-
 
                     <div className="activity-list">
 
@@ -1431,8 +1275,6 @@ const updated = {
 
                       ))}
 
-
-
                       {events.length === 0 && (
 
                         <EmptyState text="Todavía no hay eventos registrados." />
@@ -1444,8 +1286,6 @@ const updated = {
                   </section>
 
                 </div>
-
-
 
                 <section className="panel">
 
@@ -1473,8 +1313,6 @@ const updated = {
 
                   />
 
-
-
                   <DeviceTable
 
                     devices={devices.slice(0, 4)}
@@ -1490,8 +1328,6 @@ const updated = {
               </>
 
             )}
-
-
 
             {page === 'devices' && (
 
@@ -1521,8 +1357,6 @@ const updated = {
 
                 />
 
-
-
                 {showForm && (
 
                   <form className="add-device-form" onSubmit={addDevice}>
@@ -1545,8 +1379,6 @@ const updated = {
 
                     </div>
 
-
-
                     <div className="field">
 
                       <label>Dirección IP</label>
@@ -1564,8 +1396,6 @@ const updated = {
                       />
 
                     </div>
-
-
 
                     <div className="field">
 
@@ -1593,8 +1423,6 @@ const updated = {
 
                     </div>
 
-
-
                     <button className="primary-button" type="submit">
 
                       Registrar
@@ -1604,8 +1432,6 @@ const updated = {
                   </form>
 
                 )}
-
-
 
                 <div className="toolbar">
 
@@ -1620,8 +1446,6 @@ const updated = {
                     placeholder="Buscar por nombre, IP o tipo..."
 
                   />
-
-
 
                   <select
 
@@ -1645,8 +1469,6 @@ const updated = {
 
                 </div>
 
-
-
                 <DeviceTable
 
                   devices={visibleDevices}
@@ -1657,8 +1479,6 @@ const updated = {
 
                 />
 
-
-
                 <p className="footnote">
 
                   Administra los dispositivos registrados en tu red.
@@ -1668,8 +1488,6 @@ const updated = {
               </section>
 
             )}
-
-
 
             {page === 'monitoring' && (
 
@@ -1689,8 +1507,6 @@ const updated = {
 
                   />
 
-
-
                   <StatCard
 
                     label="Tráfico registrado"
@@ -1702,8 +1518,6 @@ const updated = {
                     icon="⇅"
 
                   />
-
-
 
                   <StatCard
 
@@ -1719,8 +1533,6 @@ const updated = {
 
                 </div>
 
-
-
                 <section className="panel">
 
                   <PanelTitle
@@ -1730,8 +1542,6 @@ const updated = {
                     subtitle="Estado y actualización del monitoreo"
 
                   />
-
-
 
                   <div className="monitoring-control">
 
@@ -1759,15 +1569,11 @@ const updated = {
 
                       </span>
 
-
-
                       <p className="muted">
 
                         Última actualización: {lastUpdate.toLocaleTimeString('es-PE')}
 
                       </p>
-
-
 
                       <p className="muted">
 
@@ -1776,8 +1582,6 @@ const updated = {
                       </p>
 
                     </div>
-
-
 
                     <button
 
@@ -1804,8 +1608,6 @@ const updated = {
                     </button>
 
                   </div>
-
-
 
                   <div className="monitoring-options">
 
@@ -1843,8 +1645,6 @@ const updated = {
 
                     </div>
 
-
-
                     <p className="muted">
 
                       Puedes cambiar este intervalo desde Configuración.
@@ -1855,8 +1655,6 @@ const updated = {
 
                 </section>
 
-
-
                 <section className="panel">
 
                   <PanelTitle
@@ -1866,8 +1664,6 @@ const updated = {
                     subtitle="Tráfico registrado por dispositivo"
 
                   />
-
-
 
                   {devices.map(device => (
 
@@ -1884,8 +1680,6 @@ const updated = {
                         </span>
 
                       </div>
-
-
 
                       <div className="traffic-track">
 
@@ -1931,8 +1725,6 @@ const updated = {
 
             )}
 
-
-
             {page === 'alerts' && (
 
               <section className="panel">
@@ -1960,8 +1752,6 @@ const updated = {
                   }
 
                 />
-
-
 
                 <div className="filter-grid">
                   <div className="field">
@@ -2017,8 +1807,6 @@ const updated = {
 
             )}
 
-
-
             {page === 'history' && (
 
               <section className="panel">
@@ -2031,8 +1819,6 @@ const updated = {
 
                 />
 
-
-
                 <div className="history-summary">
 
                   <div>
@@ -2043,8 +1829,6 @@ const updated = {
 
                   </div>
 
-
-
                   <div>
 
                     <span>Conservación del historial</span>
@@ -2052,8 +1836,6 @@ const updated = {
                     <strong>{settings.historyRetention} días</strong>
 
                   </div>
-
-
 
                   <div>
 
@@ -2072,8 +1854,6 @@ const updated = {
                   </div>
 
                 </div>
-
-
 
                 <div className="history-filters">
                   <div className="field">
@@ -2137,8 +1917,6 @@ const updated = {
 
                       <div className="history-icon">◷</div>
 
-
-
                       <div className="history-details">
                         <strong>{event.title}</strong>
                         <p>{event.detail}</p>
@@ -2154,15 +1932,11 @@ const updated = {
 
                   ))}
 
-
-
                   {visibleEvents.length === 0 && (
                     <EmptyState text="No hay eventos que coincidan con los filtros seleccionados." />
                   )}
 
                 </div>
-
-
 
                 <p className="footnote">
 
@@ -2176,8 +1950,6 @@ const updated = {
 
             )}
 
-
-
             {page === 'settings' && (
 
               <form className="panel settings-panel" onSubmit={saveSettings}>
@@ -2189,8 +1961,6 @@ const updated = {
                   subtitle="Personaliza la apariencia y el funcionamiento del sistema."
 
                 />
-
-
 
                 <SettingRow
 
@@ -2217,8 +1987,6 @@ const updated = {
                   </label>
 
                 </SettingRow>
-
-
 
                 <SettingRow
 
@@ -2249,8 +2017,6 @@ const updated = {
                   </label>
 
                 </SettingRow>
-
-
 
                 <SettingRow
 
@@ -2292,8 +2058,6 @@ const updated = {
 
                 </SettingRow>
 
-
-
                 <div className="info-box">
 
                   <span>ⓘ</span>
@@ -2305,8 +2069,6 @@ const updated = {
                   </p>
 
                 </div>
-
-
 
                 <div className="settings-section-heading">
 
@@ -2327,8 +2089,6 @@ const updated = {
                   </div>
 
                 </div>
-
-
 
                 <SettingRow
 
@@ -2369,8 +2129,6 @@ const updated = {
                   </select>
 
                 </SettingRow>
-
-
 
                 <SettingRow
 
@@ -2414,8 +2172,6 @@ const updated = {
 
                 </SettingRow>
 
-
-
                 <SettingRow
 
                   title="Tiempo de conservación del historial"
@@ -2454,8 +2210,6 @@ const updated = {
 
                 </SettingRow>
 
-
-
                 <div className="info-box">
 
                   <span>ⓘ</span>
@@ -2474,8 +2228,6 @@ const updated = {
 
                 </div>
 
-
-
                 <div className="settings-footer">
 
                   <button
@@ -2492,8 +2244,6 @@ const updated = {
 
                   </button>
 
-
-
                   <button className="primary-button" type="submit">
 
                     Guardar cambios
@@ -2505,8 +2255,6 @@ const updated = {
               </form>
 
             )}
-
-
 
             <footer className="page-footer">
 
@@ -2528,8 +2276,6 @@ const updated = {
 
         </main>
 
-
-
         {notice && <div className="toast">{notice}</div>}
 
       </div>
@@ -2539,8 +2285,6 @@ const updated = {
   )
 
 }
-
-
 
 function getDescription(page) {
 
@@ -2560,13 +2304,9 @@ const descriptions = {
 
   }
 
-
-
   return descriptions[page] || ''
 
 }
-
-
 
 function StatCard({ label, value, detail, icon }) {
 
@@ -2592,8 +2332,6 @@ function StatCard({ label, value, detail, icon }) {
 
 }
 
-
-
 function PanelTitle({ title, subtitle, action }) {
 
   return (
@@ -2615,8 +2353,6 @@ function PanelTitle({ title, subtitle, action }) {
   )
 
 }
-
-
 
 function SettingRow({ title, description, children }) {
 
@@ -2640,8 +2376,6 @@ function SettingRow({ title, description, children }) {
 
 }
 
-
-
 function DeviceTable({ devices, onBlock, onConnection }) {
 
   if (!devices.length) {
@@ -2649,8 +2383,6 @@ function DeviceTable({ devices, onBlock, onConnection }) {
     return <EmptyState text="No se encontraron dispositivos." />
 
   }
-
-
 
   return (
 
@@ -2678,8 +2410,6 @@ function DeviceTable({ devices, onBlock, onConnection }) {
 
         </thead>
 
-
-
         <tbody>
 
           {devices.map(device => (
@@ -2704,15 +2434,11 @@ function DeviceTable({ devices, onBlock, onConnection }) {
 
               </td>
 
-
-
               <td>
 
                 <span className="ip-address">{device.ip}</span>
 
               </td>
-
-
 
               <td>
 
@@ -2744,8 +2470,6 @@ function DeviceTable({ devices, onBlock, onConnection }) {
 
               </td>
 
-
-
               <td>
 
                 <span
@@ -2776,15 +2500,11 @@ function DeviceTable({ devices, onBlock, onConnection }) {
 
               </td>
 
-
-
               <td>
 
                 {(device.blocked ? 0 : device.traffic).toFixed(1)} MB
 
               </td>
-
-
 
               <td>
 
@@ -2801,8 +2521,6 @@ function DeviceTable({ devices, onBlock, onConnection }) {
                     {device.blocked ? 'Desbloquear' : 'Bloquear'}
 
                   </button>
-
-
 
                   <button
 
@@ -2844,15 +2562,11 @@ function DeviceTable({ devices, onBlock, onConnection }) {
 
 }
 
-
-
 function EmptyState({ text }) {
 
   return <div className="empty-state">{text}</div>
 
 }
-
-
 
 const styles = `
 
@@ -3256,8 +2970,6 @@ input:focus,select:focus{border-color:#8b7dff;box-shadow:0 0 0 3px rgba(119,102,
 
 @media(max-width:700px){.sidebar{width:68px;padding:20px 8px}.brand{padding:0 2px 28px}.brand>div:last-child,.menu-heading,.nav-item>span:not(.nav-icon),.gateway-card,.profile-info,.logout-button{display:none}.brand-logo{width:46px;height:46px}.nav-item{justify-content:center;padding:12px 0}.nav-icon{width:auto}.profile{justify-content:center;padding:14px 0 0}.profile-avatar{width:36px;height:36px}.topbar{height:65px;padding:0 13px}.breadcrumb{gap:8px;font-size:10px}.top-actions{gap:6px}.system-badge{padding:7px;font-size:8px}.top-avatar{width:32px;height:32px}.page-content{padding:24px 12px}.page-heading{align-items:flex-start;flex-direction:column}.page-heading h1{font-size:25px}.environment{white-space:normal}.stats-grid{grid-template-columns:1fr 1fr;gap:9px}.stat-card{padding:14px}.stat-top{font-size:10px}.stat-value{font-size:24px}.panel{padding:16px}.panel-title{align-items:flex-start}.setting-row{align-items:flex-start;flex-direction:column;gap:14px}.setting-control{width:100%;justify-content:flex-start}.setting-select{width:100%}.settings-footer{flex-wrap:wrap}.history-summary{grid-template-columns:1fr}.page-footer{flex-direction:column;gap:10px}.add-device-form{grid-template-columns:1fr}.monitoring-control{align-items:flex-start;flex-direction:column}.toolbar{flex-direction:column}.login-card{padding:27px 22px}.network-circle{width:190px;height:190px}.network-circle strong{font-size:30px}}
 
-
-
 /* Filtros de alertas e historial */
 .filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;padding:18px;margin-bottom:15px;background:var(--bg);border-radius:12px}
 .filter-grid select{width:100%}
@@ -3271,8 +2983,4 @@ input:focus,select:focus{border-color:#8b7dff;box-shadow:0 0 0 3px rgba(119,102,
 @media(max-width:600px){.history-filters,.filter-grid{grid-template-columns:1fr}.history-filter-footer{align-items:flex-start;flex-direction:column}}
 `
 
-
-
 export default App
-
-
