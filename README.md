@@ -10,7 +10,7 @@ El proyecto surge porque muchos dispositivos IoT domésticos conservan contrase�
 
 ## Estado del proyecto
 
-Versión v0.1 — etapa de propuesta y diseño (TRL 2–3), previa a la implementación del prototipo.
+Versión v0.2 — etapa de propuesta y diseño (TRL 2–3), previa a la implementación del prototipo.
 
 ## Equipo desarrollador
 
