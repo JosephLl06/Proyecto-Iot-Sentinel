@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import secrets
+import ssl
 import sys
 import time
 import webbrowser
@@ -16,10 +17,36 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote
 
+from backend.https_identity import panel_identity, windows_trust
 from backend.mqtt_link import Telemetry
 from backend.state import Invalid, Store
+
+COOKIE = "__Host-IoTSentinel"
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; "
+       "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+       "base-uri 'none'; form-action 'self'")
+
+
+class LocalHTTPSServer(ThreadingHTTPServer):
+    def get_request(self):
+        connection, address = super().get_request()
+        # Realizar el saludo TLS dentro del hilo de la solicitud.
+        connection.settimeout(5)
+        try:
+            return self.tls.wrap_socket(connection, server_side=True, do_handshake_on_connect=False), address
+        except OSError:
+            connection.close()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            request.do_handshake()
+        except OSError:
+            self.shutdown_request(request)
+            return
+        super().process_request_thread(request, client_address)
 
 
 def password_hash(password, salt):
@@ -70,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
         self.request.settimeout(10)
         super().setup()
 
-    def respond(self, status, data, content_type="application/json", cookie=None):
+    def respond(self, status, data, content_type="application/json", cookie=None, clear_cookie=False):
         if content_type == "application/json":
             data = json.dumps(data).encode()
         self.send_response(status)
@@ -79,8 +106,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        if cookie:
-            self.send_header("Set-Cookie", f"sentinel={cookie}; Path=/; HttpOnly; SameSite=Strict")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        if cookie is not None or clear_cookie:
+            value = cookie or ""
+            expiry = "; Max-Age=0" if clear_cookie else ""
+            self.send_header("Set-Cookie", f"{COOKIE}={value}; Path=/; Secure; HttpOnly; SameSite=Strict{expiry}")
         self.end_headers()
         self.wfile.write(data)
 
@@ -90,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
     def user(self):
         cookies = SimpleCookie()
         cookies.load(self.headers.get("Cookie", ""))
-        session = cookies.get("sentinel")
+        session = cookies.get(COOKIE)
         token = session.value if session else ""
         with self.server.gateway.store.lock:
             info = self.server.gateway.sessions.get(token)
@@ -99,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.valid_host():
             return self.respond(403, {"error": "Usa la dirección local de IoTSentinel."})
-        path = urlsplit(self.path).path
+        path = self.path.partition("?")[0]
         gateway = self.server.gateway
         if path == "/api/session":
             _, user = self.user()
@@ -122,10 +154,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         origin = self.headers.get("Origin")
-        if not self.valid_host() or (origin and origin != f"http://{self.headers['Host']}"):
+        if not self.valid_host() or origin != f"https://{self.headers['Host']}":
             return self.respond(403, {"error": "Origen no permitido."})
         gateway = self.server.gateway
-        operation = urlsplit(self.path).path.removeprefix("/api/")
+        operation = self.path.partition("?")[0].removeprefix("/api/")
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if self.headers.get_content_type() != "application/json" or not 1 <= size <= 8192:
@@ -145,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             if operation == "logout":
                 with gateway.store.lock:
                     gateway.sessions.pop(token, None)
-                return self.respond(200, {}, cookie="; Max-Age=0")
+                return self.respond(200, {}, clear_cookie=True)
             return self.respond(200, gateway.store.change(operation, data, user))
         except Invalid as error:
             return self.respond(400, {"error": str(error)})
@@ -160,6 +192,14 @@ async def run(args):
     assets = (Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "frontend" / "dist").resolve()
     if not (assets / "index.html").is_file():
         raise SystemExit("Primero compila el panel con npm ci y npm run build dentro de frontend.")
+    try:
+        panel_tls, root, ca = panel_identity(args.data_dir)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"No se pudo preparar el certificado HTTPS local. {error}") from error
+    print(f"Certificado HTTPS local: {root}", flush=True)
+    open_panel = not args.no_browser
+    if open_panel and sys.platform == "win32":
+        open_panel = windows_trust(root, ca)
     with TemporaryDirectory(prefix="iotsentinel-") as identity:
         transport = Telemetry()
         await transport.start(identity)
@@ -174,13 +214,14 @@ async def run(args):
                 raise
 
         try:
-            with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
+            with LocalHTTPSServer(("127.0.0.1", args.port), Handler) as server:
+                server.tls = panel_tls
                 server.gateway = Gateway(args.data_dir)
                 server.assets = assets
-                url = f"http://127.0.0.1:{server.server_port}"
+                url = f"https://127.0.0.1:{server.server_port}"
                 Thread(target=server.serve_forever, daemon=True).start()
                 print(f"IoTSentinel listo en {url}", flush=True)
-                if not args.no_browser:
+                if open_panel:
                     Thread(target=webbrowser.open, args=(url,), daemon=True).start()
                 try:
                     while True:

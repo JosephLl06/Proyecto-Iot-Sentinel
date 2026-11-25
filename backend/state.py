@@ -15,6 +15,46 @@ DEFAULTS = {
 TYPES = {"Cámara IP", "Sensor", "Iluminación", "Enchufe IoT", "Desconocido"}
 
 
+# Perfiles de referencia del laboratorio. Los destinos se comparan como etiquetas.
+PROFILES = {
+    "Cámara IP": {"maxMessages": 18, "destinations": ["grabador.local"]},
+    "Sensor": {"maxMessages": 8, "destinations": ["gateway.local"]},
+    "Iluminación": {"maxMessages": 7, "destinations": ["gateway.local"]},
+    "Enchufe IoT": {"maxMessages": 8, "destinations": ["gateway.local"]},
+    "Desconocido": {"maxMessages": 0, "destinations": []},
+}
+
+
+def simulated_reading(device, cycle, index):
+    profile = device["profile"]
+    reading = {
+        "id": device["id"],
+        "traffic": round(0.3 + ((cycle + index * 3) % 7) * 0.27, 2),
+        "messages": 1 + (cycle + index) % 5,
+        "destination": (profile["destinations"] or ["gateway.local"])[0],
+    }
+    if device["type"] == "Cámara IP" and cycle % 6 in (1, 2):
+        reading["traffic"] = 8.7
+    if device["type"] == "Sensor" and cycle % 6 == 2:
+        reading["messages"] = 35
+    if device["type"] == "Iluminación" and cycle % 6 == 2:
+        reading["destination"] = "destino-no-registrado.invalid"
+    return reading
+
+
+def detect(device, sample, limit):
+    profile = device["profile"]
+    if not device["authorized"]:
+        return "Dispositivo no autorizado", "Acceso no autorizado", "Alta"
+    if sample["destination"] not in profile["destinations"]:
+        return "Destino no habitual", "Destino no habitual", "Alta"
+    if sample["messages"] > profile["maxMessages"]:
+        return "Frecuencia anormal detectada", "Frecuencia anormal", "Media"
+    if sample["traffic"] > limit:
+        return "Tráfico elevado detectado", "Tráfico sospechoso", "Media"
+    return None
+
+
 class Invalid(ValueError):
     pass
 
@@ -54,7 +94,7 @@ class Store:
     def device(name, ip, kind):
         return {"id": uuid4().hex, "name": name, "ip": ip, "type": kind,
                 "status": "Conectado", "authorized": kind != "Desconocido",
-                "blocked": False, "traffic": 0, "incident": None}
+                "blocked": False, "traffic": 0, "incident": None, "profile": PROFILES[kind].copy()}
 
     def snapshot(self):
         with self.lock:
@@ -171,28 +211,22 @@ class Store:
             for index, device in enumerate(state["devices"]):
                 if device["status"] != "Conectado" or device["blocked"]:
                     continue
-                value = round(0.3 + ((cycle + index * 3) % 7) * 0.27, 2)
-                if device["type"] == "Cámara IP" and cycle % 6 in (1, 2):
-                    value = 8.7
-                samples.append({"id": device["id"], "traffic": value})
+                device.setdefault("profile", PROFILES[device["type"]].copy())
+                samples.append(simulated_reading(device, cycle, index))
 
             # El detector consume las mismas lecturas que publica el simulador.
             received = transport(samples) if samples else []
-            by_id = {sample["id"]: sample["traffic"] for sample in received}
+            by_id = {sample["id"]: sample for sample in received}
             for device in state["devices"]:
                 if device["id"] not in by_id:
                     continue
-                value = by_id[device["id"]]
-                device["traffic"] = value
-                incident = None
-                if not device["authorized"]:
-                    incident = ("Dispositivo no autorizado", "Acceso no autorizado", "Alta")
-                elif value > settings["threshold"]:
-                    incident = ("Tráfico elevado detectado", "Tráfico sospechoso", "Media")
+                sample = by_id[device["id"]]
+                device["traffic"] = sample["traffic"]
+                incident = detect(device, sample, settings["threshold"])
                 if incident and device["incident"] != incident[1]:
                     title, kind, severity = incident
-                    self.event(state, title, f"{device['name']} · {value} MB", kind=kind,
-                               severity=severity, device=device, alert=True)
+                    detail = f"{device['name']} · {sample['traffic']} MB · {sample['messages']} mensajes · {sample['destination']}"
+                    self.event(state, title, detail, kind=kind, severity=severity, device=device, alert=True)
                 device["incident"] = incident[1] if incident else None
 
             state["lastUpdate"] = timestamp

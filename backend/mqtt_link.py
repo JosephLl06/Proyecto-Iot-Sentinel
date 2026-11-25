@@ -1,4 +1,5 @@
 import asyncio
+from base64 import b64decode, b64encode
 import ipaddress
 import json
 import os
@@ -52,8 +53,8 @@ def local_identity(directory):
     return str(cert_path), str(key_path)
 
 
-def derive(secret, salt):
-    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"IoTSentinel/telemetry/v1").derive(secret)
+def derive(secret, salt, device_id):
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"IoTSentinel/telemetry/v2/" + device_id.encode()).derive(secret)
     return AESGCM(key)
 
 
@@ -79,26 +80,48 @@ class Telemetry:
         await self.simulator.connect(uri, cafile=cert)
         await self.gateway.subscribe([(TOPIC, 1)])
 
-        # El aprovisionamiento local vincula los dos roles dentro del mismo proceso.
-        sender_key = x25519.X25519PrivateKey.generate()
-        receiver_key = x25519.X25519PrivateKey.generate()
+        self.gateway_key = x25519.X25519PrivateKey.generate()
+        self.sender_keys = {}
+        self.receiver_keys = {}
+
+    def register(self, device_id):
+        if device_id in self.sender_keys:
+            return
+        device_key = x25519.X25519PrivateKey.generate()
         salt = os.urandom(32)
-        self.sender = derive(sender_key.exchange(receiver_key.public_key()), salt)
-        self.receiver = derive(receiver_key.exchange(sender_key.public_key()), salt)
+        self.sender_keys[device_id] = derive(device_key.exchange(self.gateway_key.public_key()), salt, device_id)
+        self.receiver_keys[device_id] = derive(self.gateway_key.exchange(device_key.public_key()), salt, device_id)
 
     async def exchange(self, samples):
         batch = os.urandom(16)
-        nonce = os.urandom(12)
-        aad = TOPIC.encode() + batch
-        payload = json.dumps(samples).encode()
-        ciphertext = self.sender.encrypt(nonce, payload, aad)
-        await self.simulator.publish(TOPIC, batch + nonce + ciphertext, qos=1, ack_timeout=3)
+        envelopes = {}
+        for sample in samples:
+            device_id = sample["id"]
+            self.register(device_id)
+            nonce = os.urandom(12)
+            aad = batch + TOPIC.encode() + device_id.encode()
+            ciphertext = self.sender_keys[device_id].encrypt(nonce, json.dumps(sample).encode(), aad)
+            envelopes[device_id] = b64encode(nonce + ciphertext).decode("ascii")
+        await self.simulator.publish(TOPIC, batch + json.dumps(envelopes).encode(), qos=1, ack_timeout=3)
         async with asyncio.timeout(4):
             while True:
                 message = await self.gateway.deliver_message()
                 data = message.data
                 if message.topic == TOPIC and data[:16] == batch:
-                    return json.loads(self.receiver.decrypt(data[16:28], data[28:], aad))
+                    break
+
+        decoded = json.loads(data[16:])
+        if not isinstance(decoded, dict) or decoded.keys() != envelopes.keys():
+            raise ValueError("Telemetría incompleta o de un dispositivo no registrado en este ciclo.")
+        readings = []
+        for device_id, value in decoded.items():
+            encrypted = b64decode(value, validate=True)
+            aad = batch + TOPIC.encode() + device_id.encode()
+            sample = json.loads(self.receiver_keys[device_id].decrypt(encrypted[:12], encrypted[12:], aad))
+            if sample["id"] != device_id:
+                raise ValueError("La identidad de la lectura no coincide.")
+            readings.append(sample)
+        return readings
 
     async def close(self):
         await asyncio.gather(self.gateway.disconnect(), self.simulator.disconnect(), return_exceptions=True)
