@@ -1,6 +1,7 @@
 import ipaddress
 import math
 import sqlite3
+from statistics import median
 import time
 from datetime import datetime
 from pathlib import Path
@@ -8,21 +9,14 @@ from threading import RLock
 from uuid import uuid4
 import json
 
+from backend.home import HOME, PROFILES
+
 DEFAULTS = {
     "refreshInterval": 5, "saveInterval": 5, "historyRetention": 30,
     "dark": False, "notifications": True, "threshold": 5,
 }
-TYPES = {"Cámara IP", "Sensor", "Iluminación", "Enchufe IoT", "Desconocido"}
-
-
-# Perfiles de referencia del laboratorio. Los destinos se comparan como etiquetas.
-PROFILES = {
-    "Cámara IP": {"maxMessages": 18, "destinations": ["grabador.local"]},
-    "Sensor": {"maxMessages": 8, "destinations": ["gateway.local"]},
-    "Iluminación": {"maxMessages": 7, "destinations": ["gateway.local"]},
-    "Enchufe IoT": {"maxMessages": 8, "destinations": ["gateway.local"]},
-    "Desconocido": {"maxMessages": 0, "destinations": []},
-}
+MAX_DEVICES = 64
+MAX_SAMPLES = 360
 
 
 def simulated_reading(device, cycle, index):
@@ -33,12 +27,14 @@ def simulated_reading(device, cycle, index):
         "messages": 1 + (cycle + index) % 5,
         "destination": (profile["destinations"] or ["gateway.local"])[0],
     }
-    if device["type"] == "Cámara IP" and cycle % 6 in (1, 2):
+    if device["ip"] == "192.0.2.105" and cycle % 12 in (1, 2):
         reading["traffic"] = 8.7
-    if device["type"] == "Sensor" and cycle % 6 == 2:
+    if device["ip"] == "192.0.2.102" and cycle % 12 in (2, 3):
         reading["messages"] = 35
-    if device["type"] == "Iluminación" and cycle % 6 == 2:
-        reading["destination"] = "destino-no-registrado.invalid"
+    if device["ip"] == "192.0.2.106" and cycle % 12 in (2, 3):
+        reading["destination"] = "203.0.113.45"
+    if device["ip"] == "192.0.2.107" and cycle % 12 in (2, 3, 4):
+        reading.update(messages=32, destination="198.51.100.27")
     return reading
 
 
@@ -46,13 +42,25 @@ def detect(device, sample, limit):
     profile = device["profile"]
     if not device["authorized"]:
         return "Dispositivo no autorizado", "Acceso no autorizado", "Alta"
-    if sample["destination"] not in profile["destinations"]:
+    unusual_target = sample["destination"] not in profile["destinations"]
+    if unusual_target and sample["messages"] > profile["maxMessages"] and device.get("burstStreak", 0) >= 2:
+        return "Ráfaga repetida hacia un destino desconocido", "Posible patrón de botnet", "Alta"
+    if unusual_target:
         return "Destino no habitual", "Destino no habitual", "Alta"
     if sample["messages"] > profile["maxMessages"]:
         return "Frecuencia anormal detectada", "Frecuencia anormal", "Media"
     if sample["traffic"] > limit:
         return "Tráfico elevado detectado", "Tráfico sospechoso", "Media"
     return None
+
+
+def volume_limit(device, ceiling):
+    history = device.get("normalVolumes", [])
+    if len(history) < 12:
+        return ceiling
+    center = median(history)
+    deviation = median(abs(value - center) for value in history)
+    return round(min(ceiling, center + max(1.0, 4 * deviation)), 2)
 
 
 class Invalid(ValueError):
@@ -70,18 +78,62 @@ class Store:
         self.lock = RLock()
         with self.db:
             self.db.execute("CREATE TABLE IF NOT EXISTS documents (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            if self.read("state") is None:
-                self.write("state", {
-                    "devices": [
-                        self.device("Cámara principal", "192.0.2.101", "Cámara IP"),
-                        self.device("Sensor de movimiento", "192.0.2.102", "Sensor"),
-                        self.device("Foco inteligente", "192.0.2.103", "Iluminación"),
-                        self.device("Enchufe inteligente", "192.0.2.104", "Enchufe IoT"),
-                        self.device("Dispositivo desconocido", "192.0.2.150", "Desconocido"),
-                    ],
-                    "alerts": [], "events": [], "settings": DEFAULTS.copy(),
-                    "monitoringEnabled": True, "lastUpdate": now(), "lastSave": None, "cycle": 0,
-                })
+            self.db.execute("CREATE TABLE IF NOT EXISTS telemetry (timestamp INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+            state = self.read("state") or {
+                "devices": [], "alerts": [], "events": [], "settings": DEFAULTS.copy(),
+                "monitoringEnabled": True, "lastUpdate": now(), "lastSave": None, "cycle": 0,
+            }
+            by_ip = {device["ip"]: device for device in state["devices"]}
+            if state.get("inventoryVersion", 0) < 2:
+                for last_octet, name, kind, room in HOME:
+                    ip = f"192.0.2.{last_octet}"
+                    if ip in by_ip:
+                        by_ip[ip].setdefault("room", room)
+                    elif len(state["devices"]) < MAX_DEVICES:
+                        state["devices"].append(self.device(name, ip, kind, room))
+                state["inventoryVersion"] = 2
+            self.db.execute("CREATE TABLE IF NOT EXISTS legacy_alerts (id TEXT PRIMARY KEY, timestamp INTEGER, value TEXT)")
+            if not state.get("caseVersion"):
+                self.migrate_cases(state)
+                state["caseVersion"] = 1
+            self.write("state", state)
+
+    def migrate_cases(self, state):
+        alerts = state["alerts"]
+        if not alerts:
+            return
+        # Conserva el original antes de agrupar los avisos de la edición anterior.
+        self.db.executemany("INSERT OR IGNORE INTO legacy_alerts VALUES (?, ?, ?)",
+                            [(a["id"], a["timestamp"], json.dumps(a)) for a in alerts])
+        kinds = {"Tráfico sospechoso", "Frecuencia anormal", "Destino no habitual", "Acceso no autorizado"}
+        grouped = {}
+        rebuilt = []
+        for alert in sorted(alerts, key=lambda a: a["timestamp"], reverse=True):
+            name, separator, _ = alert["detail"].partition(" · ")
+            matches = [d for d in state["devices"] if d["name"] == name and d["type"] == alert["deviceType"]]
+            if alert["type"] not in kinds or not separator or len(matches) != 1:
+                rebuilt.append(alert)
+                continue
+            device = matches[0]
+            key = device["id"], alert["type"]
+            if key in grouped:
+                case = grouped[key]
+                case["firstSeen"] = alert["timestamp"]
+                case["occurrences"] += 1
+                case["read"] = case["read"] and alert["read"]
+            else:
+                alert.update(deviceId=device["id"], deviceName=name, ip=device["ip"], room=device.get("room"),
+                             firstSeen=alert["timestamp"], lastSeen=alert["timestamp"], occurrences=1,
+                             status="Abierta", detection=True)
+                grouped[key] = alert
+                rebuilt.append(alert)
+        state["alerts"] = rebuilt
+
+    def metrics(self):
+        with self.lock:
+            rows = self.db.execute("SELECT value FROM telemetry WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                                   (now() - 86_400_000, MAX_SAMPLES))
+            return [json.loads(row[0]) for row in reversed(rows.fetchall())]
 
     def read(self, key):
         row = self.db.execute("SELECT value FROM documents WHERE key = ?", (key,)).fetchone()
@@ -91,8 +143,8 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO documents VALUES (?, ?)", (key, json.dumps(value)))
 
     @staticmethod
-    def device(name, ip, kind):
-        return {"id": uuid4().hex, "name": name, "ip": ip, "type": kind,
+    def device(name, ip, kind, room="Sin asignar"):
+        return {"id": uuid4().hex, "name": name, "ip": ip, "type": kind, "room": room,
                 "status": "Conectado", "authorized": kind != "Desconocido",
                 "blocked": False, "traffic": 0, "incident": None, "profile": PROFILES[kind].copy()}
 
@@ -109,7 +161,12 @@ class Store:
             if operation == "device":
                 name = data.get("name")
                 kind = data.get("type")
-                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100 or not isinstance(kind, str) or kind not in TYPES:
+                room = data.get("room", "Sin asignar")
+                if len(devices) >= MAX_DEVICES:
+                    raise Invalid("El inventario admite hasta 64 dispositivos.")
+                if not isinstance(room, str) or not 1 <= len(room.strip()) <= 40:
+                    raise Invalid("Ingresa una zona de hasta 40 caracteres.")
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100 or not isinstance(kind, str) or kind not in PROFILES:
                     raise Invalid("Ingresa un nombre válido y selecciona el tipo de dispositivo.")
                 try:
                     if not isinstance(data.get("ip"), str):
@@ -119,7 +176,7 @@ class Store:
                     raise Invalid("Ingresa una dirección IP válida.") from None
                 if any(device["ip"] == ip for device in devices):
                     raise Invalid("Ya existe un dispositivo con esa dirección IP.")
-                device = self.device(name.strip(), ip, kind)
+                device = self.device(name.strip(), ip, kind, room.strip())
                 devices.append(device)
                 self.event(state, "Dispositivo agregado", name.strip(), user, device=device)
             elif operation in {"block", "connection"}:
@@ -128,6 +185,7 @@ class Store:
                     raise Invalid("El dispositivo no existe.")
                 if operation == "block":
                     device["blocked"] = not device["blocked"]
+                    device["incident"] = None
                     device["traffic"] = 0
                     action = "bloqueado" if device["blocked"] else "desbloqueado"
                     self.event(state, f"Dispositivo {action}", device["name"], user,
@@ -142,6 +200,8 @@ class Store:
                     self.event(state, f"Dispositivo {device['status'].lower()}", device["name"], user,
                                "Desconexión" if connected else "Actividad del sistema",
                                device=device, alert=connected)
+            elif operation == "respond-alert":
+                self.respond_alert(state, data, user)
             elif operation == "read-alerts":
                 for alert in state["alerts"]:
                     if data.get("id") is None or alert["id"] == data["id"]:
@@ -153,8 +213,17 @@ class Store:
             elif operation == "settings":
                 state["settings"].update(self.validate_settings(data))
                 self.event(state, "Configuración actualizada", "Preferencias del sistema", user)
-            elif operation == "login":
-                self.event(state, "Inicio de sesión", "Acceso al panel local", user)
+            elif operation in {"login", "logout", "session-expired", "login-limited", "mfa-enrolled", "mfa-recovery", "mfa-limited"}:
+                title, detail = {
+                    "login": ("Inicio de sesión", "Acceso al panel local"),
+                    "logout": ("Cierre de sesión", "La sesión se cerró desde el panel"),
+                    "session-expired": ("Sesión caducada", "Se alcanzó el límite de la sesión"),
+                    "mfa-enrolled": ("Autenticador vinculado", "Se activó el segundo factor local"),
+                    "mfa-recovery": ("Código de respaldo utilizado", "Se vinculó otro autenticador y se invalidaron los respaldos anteriores"),
+                    "mfa-limited": ("Verificación limitada", "Se activó una espera de 30 segundos"),
+                    "login-limited": ("Intentos de acceso limitados", "Se activó una espera de 30 segundos"),
+                }[operation]
+                self.event(state, title, detail, user, "Control de acceso")
             else:
                 raise Invalid("Acción desconocida.")
             self.trim(state)
@@ -181,23 +250,77 @@ class Store:
 
     @staticmethod
     def event(state, title, detail, user="Sistema", kind="Actividad del sistema",
-              severity="Baja", device=None, alert=False):
+              severity="Baja", device=None, alert=False, **fields):
         timestamp = now()
         item = {
             "id": uuid4().hex, "title": title, "detail": detail, "type": kind,
             "severity": severity, "deviceType": device["type"] if device else "Sistema",
             "user": user, "time": datetime.fromtimestamp(timestamp / 1000).strftime("%d/%m/%Y %H:%M:%S"),
-            "timestamp": timestamp,
+            "timestamp": timestamp, **fields,
         }
+        if device:
+            item.update(deviceId=device["id"], deviceName=device["name"], ip=device["ip"], room=device.get("room"))
         state["events"].insert(0, item)
         if alert:
-            state["alerts"].insert(0, {**item, "read": False})
+            state["alerts"].insert(0, {**item, "read": False, "status": "Abierta", "occurrences": 1})
+        return item["id"]
+
+    def respond_alert(self, state, data, user):
+        alert = next((a for a in state["alerts"] if a["id"] == data.get("id")), None)
+        if alert is None:
+            raise Invalid("Esta alerta ya no está disponible.")
+        action = data.get("action")
+        note = data.get("note", "")
+        if not isinstance(note, str) or len(note) > 350:
+            raise Invalid("Usa una nota de hasta 350 caracteres.")
+        note = note.strip()
+        status = alert.get("status", "Abierta")
+        if action == "investigate" and status == "Abierta":
+            new_status, title = "En revisión", "Investigación iniciada"
+        elif action == "isolate" and status != "Resuelta":
+            device = next((d for d in state["devices"] if d["id"] == alert.get("deviceId")), None)
+            if not device or device["blocked"]:
+                raise Invalid("No se puede aislar este equipo desde esta alerta.")
+            device.update(blocked=True, traffic=0, incident=None, burstStreak=0)
+            new_status, title = "En revisión", "Equipo aislado en el gateway"
+        elif action == "resolve" and status != "Resuelta" and note:
+            new_status, title = "Resuelta", "Alerta resuelta"
+        elif action == "reopen" and status == "Resuelta":
+            new_status, title = "En revisión", "Investigación reabierta"
+        else:
+            raise Invalid("Comprueba el estado del caso e indica el motivo al resolverlo.")
+        alert.update(status=new_status, read=True, updatedAt=now())
+        device = next((d for d in state["devices"] if d["id"] == alert.get("deviceId")), None)
+        self.event(state, title, " · ".join(filter(None, [alert["title"], alert.get("deviceName"), note])),
+                   user, "Respuesta a alerta", alert["severity"], device, caseId=alert["id"], note=note)
+
+    def record_detection(self, state, device, sample, incident, timestamp, limit, cases):
+        title, kind, severity = incident
+        detail = f"{device['name']} · {sample['traffic']} MB · {sample['messages']} mensajes · {sample['destination']}"
+        evidence = {"traffic": sample["traffic"], "messages": sample["messages"],
+                    "destination": sample["destination"], "volumeLimit": limit,
+                    "messageLimit": device["profile"]["maxMessages"],
+                    "expectedDestinations": device["profile"]["destinations"]}
+        key = (device["id"], kind)
+        case = cases.get(key)
+        if case:
+            case.update(lastSeen=timestamp, lastEvidence=evidence, detail=detail)
+            case["occurrences"] = case.get("occurrences", 1) + 1
+            case_id = case["id"]
+        else:
+            case_id = self.event(state, title, detail, kind=kind, severity=severity, device=device,
+                                 alert=True, detection=True, evidence=evidence, lastSeen=timestamp, firstSeen=timestamp)
+            cases[key] = state["alerts"][0]
+        return {"deviceId": device["id"], "device": device["name"], "reason": title,
+                "severity": severity, "detail": detail, "caseId": case_id}
 
     @staticmethod
     def trim(state):
         cutoff = now() - state["settings"]["historyRetention"] * 86_400_000
-        for key in ("events", "alerts"):
-            state[key] = [item for item in state[key] if item["timestamp"] >= cutoff][:5000]
+        state["events"] = [e for e in state["events"] if e["timestamp"] >= cutoff][:5000]
+        def recent(a):
+            return max(a["timestamp"], a.get("lastSeen", 0), a.get("updatedAt", 0))
+        state["alerts"] = sorted((a for a in state["alerts"] if recent(a) >= cutoff), key=recent, reverse=True)[:5000]
 
     def tick(self, transport):
         with self.lock, self.db:
@@ -217,24 +340,51 @@ class Store:
             # El detector consume las mismas lecturas que publica el simulador.
             received = transport(samples) if samples else []
             by_id = {sample["id"]: sample for sample in received}
+            flags = []
+            limits = {}
+            allowed = []
+            cases = {(a.get("deviceId"), a["type"]): a for a in reversed(state["alerts"])
+                     if a.get("status") != "Resuelta" and a.get("detection")}
             for device in state["devices"]:
                 if device["id"] not in by_id:
+                    device["burstStreak"] = 0
                     continue
                 sample = by_id[device["id"]]
+                profile = device["profile"]
+                combined = sample["destination"] not in profile["destinations"] and sample["messages"] > profile["maxMessages"]
+                device["burstStreak"] = device.get("burstStreak", 0) + 1 if combined else 0
                 device["traffic"] = sample["traffic"]
-                incident = detect(device, sample, settings["threshold"])
-                if incident and device["incident"] != incident[1]:
-                    title, kind, severity = incident
-                    detail = f"{device['name']} · {sample['traffic']} MB · {sample['messages']} mensajes · {sample['destination']}"
-                    self.event(state, title, detail, kind=kind, severity=severity, device=device, alert=True)
+                limit = volume_limit(device, settings["threshold"])
+                limits[device["id"]] = [limit, profile["maxMessages"]]
+                incident = detect(device, sample, limit)
+                if incident:
+                    flags.append(self.record_detection(state, device, sample, incident, timestamp, limit, cases))
+                else:
+                    history = device.setdefault("normalVolumes", [])
+                    history.append(sample["traffic"])
+                    del history[:-36]
+                    allowed.append(sample)
                 device["incident"] = incident[1] if incident else None
 
+            total = sum(sample["traffic"] for sample in received)
+            sample_row = {
+                "timestamp": timestamp, "traffic": round(total, 2), "flags": flags,
+                "threshold": settings["threshold"], "limits": limits, "admitted": len(allowed),
+                "messages": sum(sample["messages"] for sample in received),
+                "devices": {sample["id"]: [sample["traffic"], sample["messages"]] for sample in received},
+            }
+            self.db.execute("INSERT INTO telemetry VALUES (?, ?)", (timestamp, json.dumps(sample_row)))
+            self.db.execute("DELETE FROM telemetry WHERE timestamp < ? OR timestamp NOT IN "
+                            "(SELECT timestamp FROM telemetry ORDER BY timestamp DESC LIMIT ?)",
+                            (timestamp - 86_400_000, MAX_SAMPLES))
             state["lastUpdate"] = timestamp
             state["cycle"] = cycle
             last_save = state["lastSave"]
             if last_save is None or timestamp - last_save >= settings["saveInterval"] * 60_000:
                 total = sum(device["traffic"] for device in state["devices"])
+                self.db.execute("DELETE FROM legacy_alerts WHERE timestamp < ?", (timestamp - settings["historyRetention"] * 86_400_000,))
                 self.event(state, "Registro periódico de actividad", f"Tráfico simulado: {total:.1f} MB.")
                 state["lastSave"] = timestamp
             self.trim(state)
             self.write("state", state)
+            return allowed

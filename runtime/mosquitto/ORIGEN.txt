@@ -1,0 +1,6 @@
+Eclipse Mosquitto 2.1.4 para Windows x64
+Fuente de mosquitto.exe, bibliotecas y licencias del distribuidor:
+https://mosquitto.org/files/binary/win64/mosquitto-2.1.4-install-windows-x64.exe
+SHA-256 del instalador original: 034017c8f8e3b5b86bdbd971f6c5184370311058e4de7b96a0f10204bbb9e7c8
+Código fuente correspondiente: https://mosquitto.org/files/source/mosquitto-2.1.4.tar.gz
+vcruntime140.dll proviene del runtime CPython incluido en el paquete portátil.

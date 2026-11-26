@@ -1,0 +1,45 @@
+name: Compilar IoTSentinel
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'scripts/**'
+      - 'main.py'
+      - 'requirements*.txt'
+      - '.github/workflows/build-executable.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  executable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows-x64
+            file: dist/IoTSentinel.exe
+          - os: ubuntu-22.04
+            name: Linux-x64
+            file: dist/IoTSentinel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: python -m pip install -r requirements-build.txt
+      - run: python scripts/build_executable.py
+      - run: python scripts/check_demo.py "${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IoTSentinel-${{ matrix.name }}
+          path: ${{ matrix.file }}
+          if-no-files-found: error

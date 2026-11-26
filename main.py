@@ -8,10 +8,12 @@ import mimetypes
 import os
 import re
 import secrets
-import ssl
+import signal
 import sys
 import time
 import webbrowser
+
+import pyotp
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,11 +21,17 @@ from tempfile import TemporaryDirectory
 from threading import Thread
 from urllib.parse import unquote
 
+from backend import authenticator as mfa
 from backend.https_identity import panel_identity, windows_trust
+from backend.instance import app_instance
 from backend.mqtt_link import Telemetry
-from backend.state import Invalid, Store
+from backend.state import Invalid, Store, now
+from backend.relay import Relay
 
 COOKIE = "__Host-IoTSentinel"
+CHALLENGE_LIFETIME = 300
+SESSION_INACTIVITY = 15 * 60
+SESSION_MAX_AGE = 4 * 3600
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; "
        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
        "base-uri 'none'; form-action 'self'")
@@ -59,6 +67,24 @@ class Gateway:
         self.sessions = {}
         self.last_attempt = 0
         self.failures = 0
+        self.factor_failures = 0
+        self.factor_blocked_until = 0
+        self.challenge = None
+
+    def session_user(self, token, *, activity=False):
+        with self.store.lock:
+            info = self.sessions.get(token)
+            if info is None:
+                return None
+            email, expires, last_active = info
+            current = time.monotonic()
+            if current >= expires or current - last_active >= SESSION_INACTIVITY:
+                self.sessions.pop(token, None)
+                self.store.change("session-expired", {}, email)
+                return None
+            if activity:
+                self.sessions[token] = email, expires, current
+            return email
 
     def login(self, data):
         email, password = data.get("email"), data.get("password")
@@ -76,20 +102,96 @@ class Gateway:
             account = self.store.read("account")
             email = email.casefold()
             if account is None:
+                if len(password) < 12:
+                    raise Invalid("Usa al menos 12 caracteres para crear la cuenta.")
                 salt = os.urandom(16)
                 account = {"email": email, "salt": salt.hex(), "hash": password_hash(password, salt)}
-                self.store.write("account", account)
+
             else:
                 candidate = password_hash(password, bytes.fromhex(account["salt"]))
                 if not hmac.compare_digest(candidate, account["hash"]) or email != account["email"]:
                     self.failures += 1
+                    if self.failures == 5:
+                        self.store.change("login-limited", {}, "Sistema")
                     return None
             self.failures = 0
-            state = self.store.change("login", {}, email)
+            if attempt < self.factor_blocked_until:
+                raise Invalid("Espera 30 segundos antes de intentar otro código.")
+            existing_factor = account.get("factor")
+            key_salt = bytes.fromhex(existing_factor["salt"]) if existing_factor else secrets.token_bytes(16)
+            key = mfa.credential_key(password, key_salt)
+            secret = None if existing_factor else pyotp.random_base32()
+            token = secrets.token_urlsafe(32)
+            self.challenge = {
+                "token": token, "expires": attempt + CHALLENGE_LIFETIME, "account": account,
+                "key": key, "salt": key_salt.hex(), "secret": secret,
+            }
+            response = {"stage": "pair" if secret else "verify"}
+            if secret:
+                response["qr"] = mfa.pair(email, secret)
+                response["manualKey"] = secret
+            return token, response
+
+    def expire_challenge(self):
+        with self.store.lock:
+            if self.challenge and time.monotonic() >= self.challenge["expires"]:
+                self.challenge = None
+
+    def verify_factor(self, token, data):
+        with self.store.lock, self.store.db:
+            pending = self.challenge
+            attempt = time.monotonic()
+            if not pending or not hmac.compare_digest(pending["token"], token) or attempt >= pending["expires"]:
+                raise Invalid("El paso de verificación venció. Vuelve a ingresar tu contraseña.")
+            account = pending["account"]
+            factor = account.get("factor")
+            code = data.get("code")
+            if not isinstance(code, str) or len(code) > 32:
+                raise Invalid("Ingresa el código solicitado.")
+            if attempt < self.factor_blocked_until:
+                raise Invalid("Espera 30 segundos antes de intentar otro código.")
+            pairing = pending["secret"] is not None
+            secret = pending["secret"] if pairing else mfa.unseal(factor["secret"], pending["key"])
+            step = mfa.valid_step(secret, code.strip(), -1 if pairing else factor["last"])
+            if step is None and not pairing:
+                digest = mfa.recovery_hash(code)
+                if any(hmac.compare_digest(digest, entry) for entry in factor["recovery"]):
+                    # El reemplazo se confirma con un código del nuevo autenticador.
+                    # Hasta entonces, el autenticador y los respaldos anteriores siguen vigentes.
+                    pending["secret"] = pyotp.random_base32()
+                    pending["expires"] = attempt + CHALLENGE_LIFETIME
+                    return None, {"stage": "pair", "qr": mfa.pair(account["email"], pending["secret"]),
+                                  "manualKey": pending["secret"], "replacement": True}
+            if step is None:
+                self.factor_failures += 1
+                if self.factor_failures >= 5:
+                    self.factor_failures = 0
+                    self.factor_blocked_until = attempt + 30
+                    self.challenge = None
+                    self.store.change("mfa-limited", {}, "Sistema")
+                return None
+
+            response = {}
+            if pairing:
+                codes = mfa.recovery_codes()
+                account["factor"] = {"secret": mfa.seal(secret, pending["key"]), "salt": pending["salt"],
+                                     "last": step, "recovery": [mfa.recovery_hash(item) for item in codes]}
+                response["recoveryCodes"] = codes
+                response["recoveryUsed"] = bool(factor)
+            else:
+                factor["last"] = step
+            # El contador y la recuperación sobreviven a reinicios y se guardan antes de emitir sesión.
+            self.store.write("account", account)
+            self.challenge = None
+            self.factor_failures = 0
+            if pairing:
+                event = "mfa-recovery" if factor else "mfa-enrolled"
+                self.store.change(event, {}, account["email"])
+            response["state"] = self.store.change("login", {}, account["email"])
             token = secrets.token_urlsafe(32)
             self.sessions.clear()
-            self.sessions[token] = email, attempt + 8 * 3600
-            return token, state
+            self.sessions[token] = account["email"], attempt + SESSION_MAX_AGE, attempt
+            return token, response
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -108,7 +210,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Content-Security-Policy", CSP)
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         if cookie is not None or clear_cookie:
             value = cookie or ""
             expiry = "; Max-Age=0" if clear_cookie else ""
@@ -119,14 +224,16 @@ class Handler(BaseHTTPRequestHandler):
     def valid_host(self):
         return self.headers.get("Host") == f"127.0.0.1:{self.server.server_port}"
 
-    def user(self):
+    def cookie_token(self):
         cookies = SimpleCookie()
         cookies.load(self.headers.get("Cookie", ""))
         session = cookies.get(COOKIE)
         token = session.value if session else ""
-        with self.server.gateway.store.lock:
-            info = self.server.gateway.sessions.get(token)
-        return token, info[0] if info and info[1] > time.monotonic() else None
+        return token
+
+    def user(self):
+        token = self.cookie_token()
+        return token, self.server.gateway.session_user(token)
 
     def do_GET(self):
         if not self.valid_host():
@@ -137,12 +244,16 @@ class Handler(BaseHTTPRequestHandler):
             _, user = self.user()
             with gateway.store.lock:
                 setup = gateway.store.read("account") is None
-            return self.respond(200, {"setup": setup, "email": user})
-        if path == "/api/state":
+            return self.respond(200, {"setup": setup, "email": user, "transport": self.connection.version()})
+        if path in {"/api/state", "/api/metrics"}:
             _, user = self.user()
             if not user:
                 return self.respond(401, {"error": "Inicia sesión para continuar."})
-            return self.respond(200, gateway.store.snapshot())
+            if path == "/api/metrics":
+                return self.respond(200, {"samples": gateway.store.metrics()})
+            state = gateway.store.snapshot()
+            state["transportInfo"] = {"broker": self.server.broker_name, "relay": dict(self.server.relay.status) if self.server.relay else {"enabled": False}}
+            return self.respond(200, state)
         if path.startswith("/api/"):
             return self.respond(404, {"error": "Ruta desconocida."})
         root = self.server.assets
@@ -157,7 +268,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host() or origin != f"https://{self.headers['Host']}":
             return self.respond(403, {"error": "Origen no permitido."})
         gateway = self.server.gateway
-        operation = self.path.partition("?")[0].removeprefix("/api/")
+        path = self.path.partition("?")[0]
+        if not path.startswith("/api/"):
+            return self.respond(404, {"error": "Ruta desconocida."})
+        operation = path.removeprefix("/api/")
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if self.headers.get_content_type() != "application/json" or not 1 <= size <= 8192:
@@ -169,16 +283,31 @@ class Handler(BaseHTTPRequestHandler):
                 result = gateway.login(data)
                 if result is None:
                     return self.respond(401, {"error": "Correo o contraseña incorrectos."})
-                token, state = result
-                return self.respond(200, state, cookie=token)
+                token, challenge = result
+                return self.respond(200, challenge, cookie=token)
+            if operation == "verify":
+                result = gateway.verify_factor(self.cookie_token(), data)
+                if result is None:
+                    return self.respond(401, {"error": "Código inválido, vencido o ya utilizado."})
+                token, response = result
+                return self.respond(200, response, cookie=token)
             token, user = self.user()
             if not user:
                 return self.respond(401, {"error": "Inicia sesión para continuar."})
             if operation == "logout":
                 with gateway.store.lock:
                     gateway.sessions.pop(token, None)
+                    gateway.store.change("logout", {}, user)
                 return self.respond(200, {}, clear_cookie=True)
-            return self.respond(200, gateway.store.change(operation, data, user))
+            if operation == "activity":
+                if not gateway.session_user(token, activity=True):
+                    return self.respond(401, {"error": "La sesión venció."}, clear_cookie=True)
+                return self.respond(200, {})
+            if operation not in {"device", "block", "connection", "read-alerts", "respond-alert", "monitoring", "settings"}:
+                return self.respond(404, {"error": "Ruta desconocida."})
+            state = gateway.store.change(operation, data, user)
+            gateway.session_user(token, activity=True)
+            return self.respond(200, state)
         except Invalid as error:
             return self.respond(400, {"error": str(error)})
         except (ValueError, UnicodeError):
@@ -189,7 +318,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 async def run(args):
-    assets = (Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "frontend" / "dist").resolve()
+    root_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    assets = (root_dir / "frontend" / "dist").resolve()
+    bundled_broker = root_dir / "runtime" / "mosquitto" / "mosquitto.exe"
+    mosquitto = args.mosquitto or (str(bundled_broker) if sys.platform == "win32" and bundled_broker.is_file() else None)
+    if sys.platform != "win32":
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
     if not (assets / "index.html").is_file():
         raise SystemExit("Primero compila el panel con npm ci y npm run build dentro de frontend.")
     try:
@@ -200,9 +334,11 @@ async def run(args):
     open_panel = not args.no_browser
     if open_panel and sys.platform == "win32":
         open_panel = windows_trust(root, ca)
+    relay = Relay(args.relay_url, args.relay_ca) if args.relay_url else None
     with TemporaryDirectory(prefix="iotsentinel-") as identity:
         transport = Telemetry()
-        await transport.start(identity)
+        await transport.start(identity, mosquitto)
+        sender = asyncio.create_task(relay.run()) if relay else None
         loop = asyncio.get_running_loop()
 
         def exchange(samples):
@@ -215,6 +351,8 @@ async def run(args):
 
         try:
             with LocalHTTPSServer(("127.0.0.1", args.port), Handler) as server:
+                server.broker_name = "Mosquitto" if mosquitto else "aMQTT"
+                server.relay = relay
                 server.tls = panel_tls
                 server.gateway = Gateway(args.data_dir)
                 server.assets = assets
@@ -226,13 +364,19 @@ async def run(args):
                 try:
                     while True:
                         try:
-                            await asyncio.to_thread(server.gateway.store.tick, exchange)
+                            accepted = await asyncio.to_thread(server.gateway.store.tick, exchange)
+                            if relay and accepted:
+                                relay.enqueue(accepted, now())
+                            server.gateway.expire_challenge()
                         except Exception:
                             logging.exception("No se pudo recibir la telemetría MQTT. Se reintentará.")
                         await asyncio.sleep(1)
                 finally:
                     server.shutdown()
         finally:
+            if sender:
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
             await transport.close()
 
 
@@ -241,10 +385,15 @@ def main():
     parser.add_argument("--port", type=int, default=0, help="Puerto del panel. 0 selecciona uno libre.")
     local = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
     parser.add_argument("--data-dir", type=Path, default=local / "IoTSentinel")
+    parser.add_argument("--mosquitto", help="Ruta al ejecutable Mosquitto para el broker local con mTLS.")
+    parser.add_argument("--relay-url", help="Receptor HTTPS opcional de lecturas admitidas (TLS 1.3).")
+    parser.add_argument("--relay-ca", help="CA de confianza del receptor HTTPS de pruebas.")
     parser.add_argument("--no-browser", action="store_true")
     try:
-        asyncio.run(run(parser.parse_args()))
-    except KeyboardInterrupt:
+        args = parser.parse_args()
+        with app_instance(args.data_dir):
+            asyncio.run(run(args))
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
 
 
