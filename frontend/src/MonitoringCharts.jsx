@@ -1,11 +1,13 @@
+import { DeviceProfile, ScenarioPanel } from './Investigation.jsx'
 import { useEffect, useState } from 'react'
+import TrafficInsights from './TrafficInsights.jsx'
 import './monitoring.css'
 
 const hour = new Intl.DateTimeFormat('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 const amount = new Intl.NumberFormat('es-PE', { maximumFractionDigits: 2 })
 const windows = [5, 15, 30]
 
-export default function MonitoringCharts({ request, devices, alerts, revision, checkedAt, focus, onCase, compact, onExpand, monitoring, interval, transport }) {
+export default function MonitoringCharts({ request, devices, alerts, revision, checkedAt, focus, onCase, compact, children, onExpand, onInspect, monitoring, interval, transport, threshold, submit, busy, events }) {
   const [samples, setSamples] = useState([])
   const [ready, setReady] = useState(false)
   const [unavailable, setUnavailable] = useState(false)
@@ -34,8 +36,8 @@ export default function MonitoringCharts({ request, devices, alerts, revision, c
   const latest = samples.at(-1)?.timestamp ?? 0
   const end = anchor ? anchor + Math.min(60000, minutes * 15000) : latest
   const since = end - minutes * 60000
-  const points = samples.filter(sample => sample.timestamp >= since && sample.timestamp <= end)
-    .map(sample => ({
+  const rows = samples.filter(sample => sample.timestamp >= since && sample.timestamp <= end)
+  const points = rows.map(sample => ({
       timestamp: sample.timestamp,
       flags: (sample.flags ?? []).filter(flag => !selected || flag.deviceId === selected),
       limit: selected ? (sample.limits?.[selected]?.[metric === 'traffic' ? 0 : 1] ?? (metric === 'traffic' ? sample.threshold : undefined)) : undefined,
@@ -58,16 +60,33 @@ export default function MonitoringCharts({ request, devices, alerts, revision, c
 
   const health = !monitoring ? 'Monitoreo pausado' : !latest ? 'Esperando la primera lectura' :
     checkedAt - latest > (interval * 2 + 3) * 1000 ? 'Datos atrasados' : 'Recibiendo lecturas'
-  if (compact) return <section className="panel overview-chart">
+  function inspectPeak(id, timestamp, indicator) {
+    if (compact) return onInspect(id, timestamp, indicator)
+    setSelected(id)
+    setAnchor(timestamp)
+    document.querySelector('.trend-panel')?.scrollIntoView({ block: 'start' })
+  }
+  const insights = <TrafficInsights rows={rows} metric={metric} selected={selected} devices={devices}
+    since={since} end={end} onInspect={inspectPeak} />
+  if (compact) return <><section className="panel overview-chart">
     <div className="monitor-chart-heading"><div><h2>Tráfico del hogar</h2><p>Últimos 5 minutos · MB por intervalo</p></div>
       <span className="monitor-readout">{health}</span></div>
     {unavailable && <p role="status">Error al actualizar la telemetría.</p>}
     {values.length ? <><Trend points={points} unit={unit} /><p className="case-sub">Pico {describe(peak)} · {flagged.length} detecciones · Última muestra {hour.format(latest)}</p></> : <p className="chart-empty">Esperando telemetría del gateway.</p>}
+    {samples.at(-1)?.flags && <div className="live-sim">
+      <h3>Alertas simuladas del último intervalo</h3>
+      {samples.at(-1).flags.length ? <ul>{samples.at(-1).flags.map(flag =>
+        <li key={flag.deviceId}><strong>{flag.device}</strong><span>{flag.reason}</span>
+          {flag.caseId && alerts.some(a => a.id === flag.caseId) &&
+            <button className="small-button" onClick={() => onCase(flag.caseId)}>Ver caso</button>}
+        </li>)}</ul> : <p>Las lecturas de este intervalo están dentro del perfil esperado.</p>}
+    </div>}
     <button className="secondary-button" onClick={onExpand}>Ver gráficos de monitoreo</button>
-  </section>
+  </section>{children}{insights}</>
 
   return (
     <div className="monitoring-charts">
+      <button className="secondary-button report-control" onClick={()=>window.print()}>Exportar informe de monitoreo a PDF</button>
       <section className="panel trend-panel" aria-label="Tendencia de actividad">
         <div className="monitor-chart-heading">
           <div>
@@ -76,7 +95,8 @@ export default function MonitoringCharts({ request, devices, alerts, revision, c
           </div>
           <span className="monitor-readout">{values.length} {values.length === 1 ? 'lectura' : 'lecturas'}</span>
         </div>
-        {anchor && <p className="case-confirm">Ventana de la detección del {new Date(anchor).toLocaleString('es-PE')}. <button className="secondary-button" onClick={() => setAnchor(null)}>Volver al directo</button></p>}
+        {anchor && <p className="case-confirm">Ventana de investigación del {new Date(anchor).toLocaleString('es-PE')}. <button className="secondary-button" onClick={() => setAnchor(null)}>Volver al directo</button></p>}
+        <p className="monitor-print">Selección: {devices.find(d=>d.id===selected)?.name || "Todo el hogar"} · {unit} por intervalo · Ventana de {minutes} minutos.</p>
         <div className="chart-controls">
           <label><span id="monitor-selected-label">Dispositivo</span>
             <select aria-labelledby="monitor-selected-label" value={selected} onChange={event => setSelected(event.target.value)}>
@@ -96,6 +116,7 @@ export default function MonitoringCharts({ request, devices, alerts, revision, c
             </select>
           </label>
         </div>
+        <DeviceProfile device={devices.find(d=>d.id===selected)} threshold={threshold} now={checkedAt} />
         {unavailable && <p role="status" className="chart-status">No se pudieron actualizar las lecturas.</p>}
         {values.length > 0 ? <>
           <div className="chart-indicators">
@@ -130,6 +151,7 @@ export default function MonitoringCharts({ request, devices, alerts, revision, c
         </> : <p className="chart-empty">{ready ? 'Sin lecturas guardadas para este equipo y esta ventana.' : 'Cargando lecturas…'}</p>}
       </section>
 
+      <div className="monitor-grid">{insights}</div>
       <section className="panel"><div className="monitor-chart-heading"><div><h2>Decisión del gateway</h2>
         <p>{transport?.broker || "MQTT"} · Último intervalo recibido de todo el hogar · {latest ? hour.format(latest) : 'Sin muestra'}</p></div></div>
         {samples.at(-1)?.admitted !== undefined ? <div className="chart-indicators">
@@ -140,7 +162,23 @@ export default function MonitoringCharts({ request, devices, alerts, revision, c
         {transport && <p className="case-sub">{transport.relay.enabled
           ? `Reenvío HTTPS · Lotes entregados: ${transport.relay.sent} · Fallidos: ${transport.relay.failed} · Omitidos por cola llena: ${transport.relay.dropped}`
           : 'Reenvío externo desactivado. Las lecturas permanecen en este equipo.'}</p>}
+        {transport?.relay.lastBatch && <p className="case-sub">Último lote entregado {transport.relay.lastBatch.timestamp}
+          {' · '}{transport.relay.lastBatch.readings} lecturas · {transport.relay.lastBatch.bytes} bytes
+          {' · SHA-256 (prefijo) '}<code>{transport.relay.lastBatch.digest}</code></p>}
       </section>
+      {transport?.health && <section className="panel"><h2>Estado de protección</h2>
+        <p>Broker {transport.broker} · {transport.brokerRunning ? "activo" : "detenido"}</p>
+        <p>{monitoring ? transport.health.status : 'Monitoreo pausado'} · Último intercambio MQTT confirmado {transport.health.lastExchange ? hour.format(transport.health.lastExchange) : 'pendiente'}</p>
+        <p>Fallos de ciclo desde el arranque: {transport.health.errors} · Fallos de autenticidad: {transport.health.integrityErrors}. {transport.health.lastError && 'Último error: '+hour.format(transport.health.lastError)}</p>
+      </section>}
+      <section className="monitor-print"><h2>IoTSentinel · Informe de monitoreo</h2>
+        <p>Hogar simulado · {new Date(checkedAt).toLocaleString('es-PE')} · {devices.length} dispositivos.</p>
+        <h3>Casos con actividad en la ventana del gráfico</h3>
+        {alerts.filter(a=>(!selected || a.deviceId===selected) && (a.lastSeen || a.timestamp)>=since && (a.lastSeen || a.timestamp)<=end).map(a=><p key={a.id}>{a.deviceName || a.deviceType} · {a.title} · {a.severity} · {a.status || 'Abierta'} · {a.detail}</p>)}
+        <h3>Medidas registradas en esa ventana</h3>
+        {events.filter(e=>e.caseId && (!selected || e.deviceId===selected) && e.timestamp>=since && e.timestamp<=end).map(e=><p key={e.id}>{new Date(e.timestamp).toLocaleString('es-PE')} · {e.deviceName} · {e.title} · {e.user} · {e.note || e.detail}</p>)}
+      </section>
+      <ScenarioPanel devices={devices} events={events} submit={submit} busy={busy} monitoring={monitoring} onCase={onCase}/>
       <div className="monitor-grid">
         <section className="panel">
           <div className="monitor-chart-heading">

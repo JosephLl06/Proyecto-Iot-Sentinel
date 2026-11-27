@@ -2,3 +2,14 @@
 @media(max-width:830px){.desk-overview{grid-template-columns:1fr}}@media(max-width:600px){.case-evidence,.case-filters{grid-template-columns:1fr}.case-row{grid-template-columns:1fr auto}.case-row>span{grid-column:1/-1;justify-self:start}}
 .security-flash{display:flex;align-items:center;flex-wrap:wrap;gap:9px;border:1px solid var(--border);border-left:4px solid #d9526c;background:var(--panel);color:var(--text);padding:11px 14px;margin-bottom:14px;border-radius:8px;font-size:13px}.security-flash span{flex:1;min-width:160px}
 .connection-breakdown{display:grid;gap:16px}.connection-breakdown>div{display:grid;grid-template-columns:1fr auto;gap:6px;font-size:13px}.connection-breakdown progress{width:100%;grid-column:1/-1;height:10px;accent-color:#378c77}.connection-breakdown .offline progress{accent-color:#bd7c20}.connection-breakdown .isolated progress{accent-color:#c74c67}
+
+.profile-card{padding:12px 0}.profile-card h3{font-size:15px;margin:0}.profile-card p,.phase-grid small{font-size:13px}.phase-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px}.phase-grid>div{background:var(--bg);padding:12px;border-radius:8px}.phase-grid progress{width:100%;accent-color:#5a57a6}
+@media print{
+ @page{size:A4;margin:16mm}
+ body:has(.case-detail) *{box-shadow:none!important}
+ .sidebar,.topbar,.page-heading,.security-flash,.toast,.case-workspace>.panel:not(.case-detail),.case-detail button,.case-note,.case-buttons,.case-confirm,.case-detail [role=status]{display:none!important}
+ .app-shell,.main-area,.page-content,.case-workspace,.case-detail{display:block!important;width:auto!important;min-height:0!important;margin:0!important;padding:0!important;background:white!important;color:#172136!important;overflow:visible!important}
+ .case-detail{border:0!important}.case-detail .case-evidence,.case-detail .phase-grid{break-inside:avoid}.case-detail small,.case-detail p{color:#28344a!important}
+}
+
+.monitor-print{display:none}@media print{.monitor-print{display:block;order:-1}.monitoring-charts{display:flex;flex-direction:column}.monitoring-charts .panel,.monitor-print p{break-inside:avoid}.monitoring-charts button,.monitoring-charts .panel:has(.chart-controls):not(.trend-panel),.page-content:has(.report-control)>.panel,.page-content:has(.report-control)>.stats-grid{display:none!important}.main-area{margin-left:0!important}.monitoring-charts svg{max-width:100%}.page-content:has(.case-detail) details::details-content{display:block;content-visibility:visible}}

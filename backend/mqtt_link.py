@@ -11,7 +11,7 @@ from pathlib import Path
 
 from amqtt.broker import Broker
 from amqtt.client import MQTTClient
-from amqtt.contexts import BrokerConfig, ClientConfig, ConnectionConfig, ListenerConfig
+from amqtt.contexts import Action, BrokerConfig, ClientConfig, ConnectionConfig, ListenerConfig
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, x25519
@@ -24,6 +24,22 @@ TOPIC = "iotsentinel/simulated/telemetry"
 
 
 class LocalBroker(Broker):
+    async def _authenticate(self, session, listener):
+        peer = session.ssl_object.getpeercert() if session.ssl_object else None
+        subject = (peer or {}).get("subject", ())
+        role = next((value for group in subject for key, value in group if key == "commonName"), None)
+        if role not in {"gateway", "simulator"} or role != session.client_id:
+            return False
+        session.username = role
+        return session.clean_session and not session.will_flag
+
+    async def _topic_filtering(self, session, topic, action):
+        if topic != TOPIC or session is None:
+            return False
+        if action == Action.PUBLISH:
+            return session.username == "simulator"
+        return session.username == "gateway" and action in {Action.SUBSCRIBE, Action.RECEIVE}
+
     async def _create_server_instance(self, *args):
         server = await super()._create_server_instance(*args)
         self.port = server.sockets[0].getsockname()[1]
@@ -135,12 +151,12 @@ class Telemetry:
             listener = ListenerConfig(bind="127.0.0.1:0", ssl=True, ssl_context=context, max_connections=2)
             self.broker = LocalBroker(BrokerConfig(
                 listeners={"default": listener},
-                plugins={"amqtt.plugins.authentication.AnonymousAuthPlugin": {"allow_anonymous": True}},
+                plugins={},
             ))
             await self.broker.start()
         def client(role):
             certfile, keyfile = identities[role]
-            return MQTTClient(config=ClientConfig(connection=ConnectionConfig(certfile=certfile, keyfile=keyfile)))
+            return MQTTClient(client_id=role, config=ClientConfig(connection=ConnectionConfig(certfile=certfile, keyfile=keyfile)))
         self.gateway = client("gateway")
         self.simulator = client("simulator")
         uri = f"mqtts://127.0.0.1:{self.broker.port}"
@@ -164,7 +180,7 @@ class Telemetry:
         self.sender_keys[device_id] = derive(device_key.exchange(self.gateway_key.public_key()), salt, device_id)
         self.receiver_keys[device_id] = derive(self.gateway_key.exchange(device_key.public_key()), salt, device_id)
 
-    async def exchange(self, samples):
+    async def exchange(self, samples, *, evidence=None):
         batch = ENVELOPE_VERSION + os.urandom(16)
         envelopes = {}
         for sample in samples:
@@ -192,6 +208,8 @@ class Telemetry:
             sample = json.loads(self.receiver_keys[device_id].decrypt(encrypted[:12], encrypted[12:], aad))
             if sample["id"] != device_id:
                 raise ValueError("La identidad de la lectura no coincide.")
+            if evidence is not None:
+                evidence(value, sample)
             readings.append(sample)
         return readings
 

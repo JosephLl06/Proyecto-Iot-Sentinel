@@ -1,3 +1,6 @@
+import sys
+sys.dont_write_bytecode = True
+
 import argparse
 import asyncio
 import hashlib
@@ -9,10 +12,10 @@ import os
 import re
 import secrets
 import signal
-import sys
 import time
 import webbrowser
 
+from cryptography.exceptions import InvalidTag
 import pyotp
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +25,7 @@ from threading import Thread
 from urllib.parse import unquote
 
 from backend import authenticator as mfa
+from backend import desktop
 from backend.https_identity import panel_identity, windows_trust
 from backend.instance import app_instance
 from backend.mqtt_link import Telemetry
@@ -132,6 +136,42 @@ class Gateway:
                 response["manualKey"] = secret
             return token, response
 
+    def reset_password(self, data):
+        email, password, recovery, code = (data.get(k) for k in ("email", "password", "recovery", "code"))
+        if not all(isinstance(v, str) for v in (email, password, recovery, code)) or not 12 <= len(password) <= 128:
+            raise Invalid("Usa una nueva contraseña de 12 a 128 caracteres y completa los campos.")
+        with self.store.lock, self.store.db:
+            moment = time.monotonic()
+            if moment < self.factor_blocked_until:
+                raise Invalid("Espera 30 segundos antes de volver a intentar.")
+            account = self.store.read("account") or {}
+            factor = account.get("factor", {})
+            secret = None
+            if account.get("email") == email.casefold() and factor.get("passwordRecovery") and re.fullmatch("[a-fA-F0-9]{64}", recovery):
+                try:
+                    secret = mfa.unseal(factor["passwordRecovery"], bytes.fromhex(recovery))
+                except InvalidTag:
+                    pass
+            step = mfa.valid_step(secret, code, factor["last"]) if secret else None
+            if step is None:
+                self.factor_failures += 1
+                if self.factor_failures >= 5:
+                    self.factor_blocked_until = moment + 30
+                    self.factor_failures = 0
+                    self.store.change("mfa-limited", {}, "Sistema")
+                return False
+            salt, key_salt = os.urandom(16), os.urandom(16)
+            factor.update(secret=mfa.seal(secret, mfa.credential_key(password, key_salt)),
+                          salt=key_salt.hex(), last=step, recovery=[])
+            del factor["passwordRecovery"]
+            account.update(salt=salt.hex(), hash=password_hash(password, salt))
+            self.store.write("account", account)
+            self.sessions.clear()
+            self.challenge = None
+            self.factor_failures = self.failures = 0
+            self.store.change("password-reset", {}, account["email"])
+            return True
+
     def expire_challenge(self):
         with self.store.lock:
             if self.challenge and time.monotonic() >= self.challenge["expires"]:
@@ -180,6 +220,14 @@ class Gateway:
                 response["recoveryUsed"] = bool(factor)
             else:
                 factor["last"] = step
+            if "passwordRecovery" not in account["factor"]:
+                offline_key = secrets.token_bytes(32)
+                account["factor"]["passwordRecovery"] = mfa.seal(secret, offline_key)
+                response["passwordRecoveryKey"] = offline_key.hex()
+                if not account["factor"]["recovery"]:
+                    codes = mfa.recovery_codes()
+                    account["factor"]["recovery"] = [mfa.recovery_hash(item) for item in codes]
+                    response["recoveryCodes"] = codes
             # El contador y la recuperación sobreviven a reinicios y se guardan antes de emitir sesión.
             self.store.write("account", account)
             self.challenge = None
@@ -252,7 +300,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/metrics":
                 return self.respond(200, {"samples": gateway.store.metrics()})
             state = gateway.store.snapshot()
-            state["transportInfo"] = {"broker": self.server.broker_name, "relay": dict(self.server.relay.status) if self.server.relay else {"enabled": False}}
+            broker = self.server.broker
+            running = broker.process.returncode is None if hasattr(broker, "process") else broker.transitions.state == "started"
+            state["transportInfo"] = {"brokerRunning": running, "health": dict(self.server.health), "broker": self.server.broker_name, "relay": dict(self.server.relay.status) if self.server.relay else {"enabled": False}}
             return self.respond(200, state)
         if path.startswith("/api/"):
             return self.respond(404, {"error": "Ruta desconocida."})
@@ -279,6 +329,10 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise Invalid("Solicitud JSON inválida.")
+            if operation == "reset-password":
+                if not gateway.reset_password(data):
+                    return self.respond(401, {"error": "Revisa el correo, la clave de recuperación y el código actual."})
+                return self.respond(200, {"updated": True}, clear_cookie=True)
             if operation == "login":
                 result = gateway.login(data)
                 if result is None:
@@ -303,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not gateway.session_user(token, activity=True):
                     return self.respond(401, {"error": "La sesión venció."}, clear_cookie=True)
                 return self.respond(200, {})
-            if operation not in {"device", "block", "connection", "read-alerts", "respond-alert", "monitoring", "settings"}:
+            if operation not in {"device", "block", "connection", "read-alerts", "respond-alert", "scenario", "monitoring", "settings"}:
                 return self.respond(404, {"error": "Ruta desconocida."})
             state = gateway.store.change(operation, data, user)
             gateway.session_user(token, activity=True)
@@ -320,8 +374,6 @@ class Handler(BaseHTTPRequestHandler):
 async def run(args):
     root_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     assets = (root_dir / "frontend" / "dist").resolve()
-    bundled_broker = root_dir / "runtime" / "mosquitto" / "mosquitto.exe"
-    mosquitto = args.mosquitto or (str(bundled_broker) if sys.platform == "win32" and bundled_broker.is_file() else None)
     if sys.platform != "win32":
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, asyncio.current_task().cancel)
     if not (assets / "index.html").is_file():
@@ -334,10 +386,10 @@ async def run(args):
     open_panel = not args.no_browser
     if open_panel and sys.platform == "win32":
         open_panel = windows_trust(root, ca)
-    relay = Relay(args.relay_url, args.relay_ca) if args.relay_url else None
+    relay = Relay(args.relay_url, args.relay_ca, args.relay_cert, args.relay_key) if args.relay_url else None
     with TemporaryDirectory(prefix="iotsentinel-") as identity:
         transport = Telemetry()
-        await transport.start(identity, mosquitto)
+        await transport.start(identity, args.mosquitto)
         sender = asyncio.create_task(relay.run()) if relay else None
         loop = asyncio.get_running_loop()
 
@@ -351,28 +403,41 @@ async def run(args):
 
         try:
             with LocalHTTPSServer(("127.0.0.1", args.port), Handler) as server:
-                server.broker_name = "Mosquitto" if mosquitto else "aMQTT"
+                server.health = {"lastExchange": None, "lastError": None, "errors": 0, "integrityErrors": 0,
+                                 "status": "Esperando telemetría"}
+                server.broker = transport.broker
+                server.broker_name = "Mosquitto" if args.mosquitto else "aMQTT"
                 server.relay = relay
                 server.tls = panel_tls
                 server.gateway = Gateway(args.data_dir)
                 server.assets = assets
                 url = f"https://127.0.0.1:{server.server_port}"
                 Thread(target=server.serve_forever, daemon=True).start()
-                print(f"IoTSentinel listo en {url}", flush=True)
-                if open_panel:
-                    Thread(target=webbrowser.open, args=(url,), daemon=True).start()
-                try:
-                    while True:
-                        try:
-                            accepted = await asyncio.to_thread(server.gateway.store.tick, exchange)
-                            if relay and accepted:
-                                relay.enqueue(accepted, now())
-                            server.gateway.expire_challenge()
-                        except Exception:
-                            logging.exception("No se pudo recibir la telemetría MQTT. Se reintentará.")
-                        await asyncio.sleep(1)
-                finally:
-                    server.shutdown()
+                with desktop.advertise(args.data_dir, server.server_port) as stopping:
+                    print(f"IoTSentinel listo en {url}", flush=True)
+                    if open_panel:
+                        Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+                    try:
+                        while not stopping():
+                            try:
+                                accepted = await asyncio.to_thread(server.gateway.store.tick, exchange)
+                                if accepted is not None:
+                                    server.health.update(status="Ciclo recibido" if server.gateway.store.last_count else "Sin equipos activos",
+                                                         lastExchange=now() if server.gateway.store.last_count else server.health["lastExchange"])
+                                if relay and accepted:
+                                    relay.enqueue(accepted, now())
+                                server.gateway.expire_challenge()
+                            except Exception as error:
+                                integrity = isinstance(error, InvalidTag)
+                                server.health.update(status="Error de autenticidad" if integrity else "Ciclo interrumpido",
+                                                     lastError=now(), errors=server.health["errors"] + 1,
+                                                     integrityErrors=server.health["integrityErrors"] + int(integrity))
+                                logging.exception("No se pudo recibir la telemetría MQTT. Se reintentará.")
+                            await asyncio.sleep(1)
+                    finally:
+                        server.shutdown()
+                        with server.gateway.store.lock:
+                            server.gateway.store.db.close()
         finally:
             if sender:
                 sender.cancel()
@@ -382,15 +447,22 @@ async def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description="IoTSentinel. Laboratorio local de seguridad IoT.")
-    parser.add_argument("--port", type=int, default=0, help="Puerto del panel. 0 selecciona uno libre.")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("IOTSENTINEL_PORT", 0)), help="Puerto del panel. 0 selecciona uno libre.")
     local = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
     parser.add_argument("--data-dir", type=Path, default=local / "IoTSentinel")
     parser.add_argument("--mosquitto", help="Ruta al ejecutable Mosquitto para el broker local con mTLS.")
     parser.add_argument("--relay-url", help="Receptor HTTPS opcional de lecturas admitidas (TLS 1.3).")
     parser.add_argument("--relay-ca", help="CA de confianza del receptor HTTPS de pruebas.")
-    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--relay-cert", help="Certificado público del cliente de la salida mTLS.")
+    parser.add_argument("--relay-key", help="Clave privada local del cliente de la salida mTLS.")
+    parser.add_argument("--no-browser", action="store_true", default=os.environ.get("IOTSENTINEL_NO_BROWSER") == "1")
     try:
         args = parser.parse_args()
+        root = Path(__file__).resolve().parent
+        if (sys.platform == "win32" and not getattr(sys, "frozen", False)
+                and not args.no_browser and len(sys.argv) == 1 and (root / "runtime" / "pythonw.exe").is_file()):
+            desktop.start_desktop(root, args.data_dir)
+            return
         with app_instance(args.data_dir):
             asyncio.run(run(args))
     except (KeyboardInterrupt, asyncio.CancelledError):

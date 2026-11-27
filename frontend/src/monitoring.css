@@ -43,3 +43,35 @@
 .chart-incidents ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .chart-incidents li{display:grid;grid-template-columns:100px minmax(110px,1fr) minmax(140px,2fr);gap:8px;font-size:12px}
 @media(max-width:650px){.chart-incidents li{grid-template-columns:1fr}}
+
+.insights-panel h2 { margin: 0 0 5px; font-size: 16px; }
+.insights-panel p { color: var(--muted); font-size: 13px; margin: 0 0 15px; line-height: 1.5; }
+.peak-facts { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 18px 0; }
+.peak-facts div { display: grid; gap: 4px; align-content: end; }
+.peak-facts small, .decision-key { color: var(--muted); font-size: 12px; }
+.peak-facts strong, .decision-total strong { font-size: 21px; font-variant-numeric: tabular-nums; }
+.peak-facts b { font-size: 14px; }
+.peak-list .device-link { background: none; border: none; color: var(--text); font: inherit; font-weight: 650; text-decoration: underline; text-underline-offset: 3px; text-align: left; padding: 2px 0; cursor: pointer; }
+.insights-panel .peak-note { margin: 16px 0 0; padding: 9px 12px; border-left: 3px solid #8274e6; background: var(--bg); color: var(--text); }
+.decision-total { margin: 16px 0 10px; font-size: 13px; }
+.decision-key { display: flex; gap: 16px; margin-bottom: 8px; }
+.decision-key span::before { content: ''; display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; background: #287e79; }
+.decision-key span:last-child::before, .decision-bar { background: repeating-linear-gradient(135deg,#ba6540 0 4px,#a34d2e 4px 6px); }
+.decision-table { border-collapse: collapse; width: 100%; color: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
+.decision-table th, .decision-table td { padding: 6px 3px; text-align: left; }
+.decision-table thead th { color: var(--muted); border-bottom: 1px solid var(--border); font-size: 11px; }
+.decision-table th:last-child, .decision-table td:last-child { text-align: right; }
+.decision-table td:nth-child(2) { width: 43%; }
+.decision-bar { height: 10px; border-radius: 3px; overflow: hidden; }
+.decision-bar i { display: block; height: 100%; background: #287e79; }
+@media print { .decision-bar, .decision-key, .peak-list { print-color-adjust: exact; } }
+@media print {
+  .monitoring-charts .peak-list .device-link { display: inline !important; text-decoration: none; }
+}
+
+.live-sim { margin: 14px 0; border-top: 1px solid var(--border); }
+.live-sim h3 { font-size: 14px; margin: 12px 0 5px; }
+.live-sim ul { list-style: none; margin: 0; padding: 0; }
+.live-sim li { display: flex; gap: 4px 12px; align-items: baseline; flex-wrap: wrap; padding: 5px 0; font-size: 12px; }
+.live-sim li span { color: var(--muted); }
+.live-sim li button { margin: 0 0 0 auto; }

@@ -1,3 +1,4 @@
+import { Comparison } from './Investigation.jsx'
 import { useState } from 'react'
 import './security.css'
 
@@ -27,7 +28,7 @@ export function PriorityPanel({ alerts, onOpen }) {
   </section>
 }
 
-export default function SecurityDesk({ alerts, devices, events, selected, setSelected, submit, busy, onMonitor }) {
+export default function SecurityDesk({ alerts, devices, events, selected, setSelected, submit, busy, onMonitor, checkedAt }) {
   const [stage, setStage] = useState('Todos')
   const [severity, setSeverity] = useState('Todos')
   const [kind, setKind] = useState('Todos')
@@ -37,7 +38,7 @@ export default function SecurityDesk({ alerts, devices, events, selected, setSel
     .sort((a,b) => lastSeen(b) - lastSeen(a))
   const item = alerts.find(a => a.id === selected)
   return <div className="case-workspace">
-    {item && <CaseDetail key={item.id} alert={item} device={devices.find(d => d.id === item.deviceId)}
+    {item && <CaseDetail checkedAt={checkedAt} key={item.id} alert={item} device={devices.find(d => d.id === item.deviceId)}
       events={events} submit={submit} busy={busy} onMonitor={onMonitor} onClose={() => setSelected(null)} />}
     <section className="panel">
       <div className="monitor-chart-heading"><div><h2>Bandeja de casos</h2>
@@ -63,7 +64,7 @@ export default function SecurityDesk({ alerts, devices, events, selected, setSel
   </div>
 }
 
-function CaseDetail({ alert, device, events, submit, busy, onMonitor, onClose }) {
+function CaseDetail({ alert, device, events, submit, busy, onMonitor, onClose, checkedAt }) {
   const [note, setNote] = useState('')
   const [confirm, setConfirm] = useState(false)
   const [feedback, setFeedback] = useState('')
@@ -89,6 +90,11 @@ function CaseDetail({ alert, device, events, submit, busy, onMonitor, onClose })
     {alert.evidence && alert.lastEvidence && <details><summary>Lectura inicial del caso</summary>
       <p>{alert.evidence.traffic} MB · {alert.evidence.messages} mensajes · {alert.evidence.destination}</p>
     </details>}
+    <p>IoTSentinel · Informe de caso · Simulación local · {alert.id}</p>
+    {alert.lastTest && <p>Última prueba controlada asociada: {alert.lastTest}</p>}
+    <Comparison comparison={alert.comparison} />
+    {device && <p>Última lectura {device.lastReadingAt ? dateTime(device.lastReadingAt) : 'sin registro'} · {device.blocked ? 'Aislado' : 'Sin aislamiento activo'}. {device.isolatedAt && device.blocked && 'Duración del aislamiento: '+Math.max(0,Math.floor((checkedAt-device.isolatedAt)/1000))+' s.'} {device.restoredAt && !device.blocked && ('Restablecido el '+dateTime(device.restoredAt)+'. '+(device.recurrenceAt ? 'Nueva anomalía el '+dateTime(device.recurrenceAt) : 'Sin nuevas anomalías registradas.'))}</p>}
+    <button className="secondary-button" onClick={()=>window.print()}>Exportar caso a PDF</button>
     {device && <button className="secondary-button" onClick={() => onMonitor(device.id, lastSeen(alert), alert.type === 'Posible patrón de botnet' || alert.type === 'Frecuencia anormal' ? 'messages' : 'traffic')}>Ver lecturas del equipo</button>}
     <label className="case-note">Nota de seguimiento <textarea rows="2" maxLength={350} value={note} onChange={e => setNote(e.target.value)} placeholder="¿Qué comprobaste o qué medida tomaste?" /></label>
     <div className="case-buttons">

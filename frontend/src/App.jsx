@@ -81,6 +81,8 @@ const [loginError, setLoginError] = useState('')
 const [authStep, setAuthStep] = useState(null)
 const [verificationCode, setVerificationCode] = useState('')
 const [useBackup, setUseBackup] = useState(false)
+const [resetForm, setResetForm] = useState(false)
+const [offlineKey, setOfflineKey] = useState('')
 const [backupCodes, setBackupCodes] = useState([])
 
 const [showPassword, setShowPassword] = useState(false)
@@ -113,6 +115,7 @@ const [settings, setSettings] = useState(defaultSettings)
 
 const [draftSettings, setDraftSettings] = useState(defaultSettings)
 
+const [cycles, setCycles] = useState(0)
 const [lastUpdate, setLastUpdate] = useState(new Date())
 
 const [transportInfo, setTransportInfo] = useState(null)
@@ -252,6 +255,7 @@ function notify(message) {
     setEvents(state.events)
     setSettings(state.settings)
     setMonitoringEnabled(state.monitoringEnabled)
+    setCycles(state.cycle ?? 0)
     setLastUpdate(new Date(state.lastUpdate))
     setLastSave(state.lastSave ? new Date(state.lastSave) : null)
   }
@@ -332,7 +336,7 @@ function notify(message) {
     setBusy(true)
     try {
       const result = await request(action, data)
-      if (action !== 'logout' && action !== 'login' && action !== 'verify') applyState(result)
+      if (!['logout','login','verify','reset-password'].includes(action)) applyState(result)
       onSuccess?.(result)
     } catch (error) {
       if (error.status === 401 && action !== 'login' && action !== 'verify') setIsLoggedIn(false)
@@ -370,6 +374,7 @@ function notify(message) {
       setSetup(false)
       setAuthStep(null)
       setVerificationCode('')
+      setOfflineKey(result.passwordRecoveryKey || '')
       setBackupCodes(result.recoveryCodes ?? [])
       setIsLoggedIn(true)
       setPage('dashboard')
@@ -431,14 +436,17 @@ function notify(message) {
     })
   }
 
-  if (isLoggedIn && backupCodes.length) {
+  if (isLoggedIn && (backupCodes.length || offlineKey)) {
     return <main className="login-screen">
       <section className="login-card factor-card">
         <div className="login-logo">IS</div>
         <h1>Códigos de respaldo</h1>
         <p className="factor-help">Guárdalos en un lugar privado separado de esta computadora. Cada código sirve una vez junto con tu contraseña.</p>
         <ul className="backup-codes">{backupCodes.map(code => <li key={code}><code>{code}</code></li>)}</ul>
-        <button type="button" className="primary-button full-button" onClick={() => setBackupCodes([])}>
+        {offlineKey && <><h2>Clave para recuperar la contraseña</h2>
+          <p>Guárdala en privado. Para usarla también necesitarás tu autenticador.</p>
+          <code className="offline-key" style={{overflowWrap:'anywhere'}}>{offlineKey}</code></>}
+        <button type="button" className="primary-button full-button" onClick={() => {setBackupCodes([]); setOfflineKey('')}}>
           Ya guardé mis códigos
         </button>
       </section>
@@ -482,6 +490,21 @@ function notify(message) {
       </form>
     </main>
   }
+
+  if (!isLoggedIn && resetForm) return <main className="login-screen"><form className="login-card" onSubmit={event => {
+    event.preventDefault()
+    const values = Object.fromEntries(new FormData(event.currentTarget))
+    submit('reset-password', values, () => {setResetForm(false); setLoginError('Contraseña actualizada. Ingresa con tu nueva contraseña y el siguiente código del autenticador.')}, setLoginError)
+  }}><h1>Recuperar contraseña</h1>
+    <p>Usa la clave de recuperación guardada al vincular tu cuenta y un código nuevo del autenticador.</p>
+    {[['email','Correo de la cuenta','email'], ['recovery','Clave de recuperación','password'], ['code','Código de 6 dígitos','text'], ['password','Nueva contraseña','password']].map(([name,label,type]) =>
+      <div key={name} className="field"><label htmlFor={'reset-'+name}>{label}</label><input id={'reset-'+name} required name={name} type={type}
+      autoComplete={name==='password'?'new-password':name==='code'?'one-time-code':'off'} minLength={name==='password'?12:undefined}
+      maxLength={name==='code'?6:name==='recovery'?64:undefined}/></div>)}
+    {loginError && <p role="alert">{loginError}</p>}
+    <button disabled={busy} className="primary-button full-button">Restablecer contraseña</button>
+    <button type="button" className="text-button" onClick={()=>{setResetForm(false); setLoginError('')}}>Volver al ingreso</button>
+  </form></main>
 
   if (!isLoggedIn) {
 
@@ -582,6 +605,7 @@ function notify(message) {
 
             </button>
 
+            {!setup && <button type="button" className="text-button" onClick={()=>{setResetForm(true);setLoginError('')}}>Olvidé mi contraseña</button>}
             <p className="login-note">
 
               {setup ? 'Crea la cuenta de administrador local. Usa al menos 12 caracteres en la contraseña.' : 'Ingresa los datos de tu cuenta local.'}
@@ -838,9 +862,10 @@ function notify(message) {
 
                 <div className="desk-overview">
                   <MonitoringCharts compact request={request} devices={devices} alerts={alerts}
-                    revision={lastUpdate.getTime()} checkedAt={checkedAt} onExpand={() => changePage('monitoring')}
-                    monitoring={monitoringEnabled} interval={settings.refreshInterval} />
-                  <PriorityPanel alerts={alerts} onOpen={openCase} />
+                    revision={lastUpdate.getTime()} checkedAt={checkedAt} onCase={openCase} onInspect={openMonitor} onExpand={() => changePage('monitoring')}
+                    monitoring={monitoringEnabled} interval={settings.refreshInterval}>
+                    <PriorityPanel alerts={alerts} onOpen={openCase} />
+                  </MonitoringCharts>
                 </div>
 
                 <div className="content-grid">
@@ -1173,7 +1198,7 @@ function notify(message) {
 
                 <MonitoringCharts request={request} devices={devices} alerts={alerts}
                   revision={lastUpdate.getTime()} checkedAt={checkedAt} focus={monitorFocus} onCase={openCase}
-                  monitoring={monitoringEnabled} interval={settings.refreshInterval} transport={transportInfo} />
+                  monitoring={monitoringEnabled} interval={settings.refreshInterval} transport={transportInfo} threshold={settings.threshold} events={events} submit={submit} busy={busy} />
 
                 <section className="panel">
 
@@ -1211,6 +1236,7 @@ function notify(message) {
 
                       </span>
 
+                      <p className="muted">El gateway genera las lecturas aunque cierres el navegador.</p>
                       <p className="muted">
 
                         Última actualización: {lastUpdate.toLocaleTimeString('es-PE')}
@@ -1219,7 +1245,7 @@ function notify(message) {
 
                       <p className="muted">
 
-                        Lecturas nuevas cada {settings.refreshInterval} segundos.
+                        Intervalo configurado de {settings.refreshInterval} segundos · {cycles.toLocaleString('es-PE')} ciclos completados.
 
                       </p>
 
@@ -1291,7 +1317,7 @@ function notify(message) {
 
             )}
 
-            {page === 'alerts' && <SecurityDesk alerts={alerts} devices={devices} events={events}
+            {page === 'alerts' && <SecurityDesk checkedAt={checkedAt} alerts={alerts} devices={devices} events={events}
               selected={selectedCase} setSelected={setSelectedCase} onMonitor={openMonitor} submit={submit} busy={busy} />}
 
             {page === 'history' && (

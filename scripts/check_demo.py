@@ -21,7 +21,7 @@ PASSWORD = "demo-password-local"
 
 def start(command, folder):
     process = subprocess.Popen(command + ["--no-browser", "--data-dir", folder],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     lines = queue.Queue()
 
     def read():
@@ -48,7 +48,10 @@ def start(command, folder):
 
 
 def stop(process):
-    process.terminate()
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], check=True)
+    else:
+        process.terminate()
     process.wait(timeout=10)
 
 

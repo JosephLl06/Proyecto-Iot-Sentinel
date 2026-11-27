@@ -35,12 +35,17 @@ def simulated_reading(device, cycle, index):
         reading["destination"] = "203.0.113.45"
     if device["ip"] == "192.0.2.107" and cycle % 12 in (2, 3, 4):
         reading.update(messages=32, destination="198.51.100.27")
+    # Las direcciones solo son campos JSON de la simulación local.
+    if device["ip"] == "192.0.2.108" and cycle % 12 in (6, 7):
+        reading["identityTest"] = "unknown"
+    if device["ip"] == "192.0.2.109" and cycle % 12 in (9, 10):
+        reading["destination"] = "203.0.113.89"
     return reading
 
 
 def detect(device, sample, limit):
     profile = device["profile"]
-    if not device["authorized"]:
+    if not device["authorized"] or sample.get("identityTest") == "unknown":
         return "Dispositivo no autorizado", "Acceso no autorizado", "Alta"
     unusual_target = sample["destination"] not in profile["destinations"]
     if unusual_target and sample["messages"] > profile["maxMessages"] and device.get("burstStreak", 0) >= 2:
@@ -152,7 +157,15 @@ class Store:
         with self.lock:
             state = self.read("state")
             self.trim(state)
+            self.describe_profiles(state)
             return state
+
+    @staticmethod
+    def describe_profiles(state):
+        for device in state["devices"]:
+            history = device.get("normalVolumes", [])
+            device["typicalVolume"] = median(history) if history else None
+            device["volumeLimit"] = volume_limit(device, state["settings"]["threshold"])
 
     def change(self, operation, data, user):
         with self.lock, self.db:
@@ -179,12 +192,29 @@ class Store:
                 device = self.device(name.strip(), ip, kind, room.strip())
                 devices.append(device)
                 self.event(state, "Dispositivo agregado", name.strip(), user, device=device)
+            elif operation == "scenario":
+                names = {"volume": "Pico de volumen", "destination": "Destino desconocido",
+                         "identity": "Identidad no autorizada"}
+                kind = data.get("kind")
+                device = next((d for d in devices if d["id"] == data.get("id")), None)
+                if not isinstance(kind, str) or kind not in names or not device or not device["authorized"]:
+                    raise Invalid("Selecciona una prueba y un equipo autorizado.")
+                if not state["monitoringEnabled"] or device["blocked"] or device["status"] != "Conectado":
+                    raise Invalid("El monitoreo y el equipo deben estar activos.")
+                if device.get("scenario"):
+                    raise Invalid("Este equipo ya tiene una prueba pendiente.")
+                test_id = self.event(state, "Prueba programada", names[kind], user, device=device)
+                device["scenario"] = {"id": test_id, "kind": kind, "name": names[kind]}
             elif operation in {"block", "connection"}:
                 device = next((item for item in devices if item["id"] == data.get("id")), None)
                 if device is None:
                     raise Invalid("El dispositivo no existe.")
                 if operation == "block":
                     device["blocked"] = not device["blocked"]
+                    if device["blocked"]:
+                        device["isolatedAt"] = now()
+                    else:
+                        device.update(restoredAt=now(), recurrenceAt=None)
                     device["incident"] = None
                     device["traffic"] = 0
                     action = "bloqueado" if device["blocked"] else "desbloqueado"
@@ -213,13 +243,14 @@ class Store:
             elif operation == "settings":
                 state["settings"].update(self.validate_settings(data))
                 self.event(state, "Configuración actualizada", "Preferencias del sistema", user)
-            elif operation in {"login", "logout", "session-expired", "login-limited", "mfa-enrolled", "mfa-recovery", "mfa-limited"}:
+            elif operation in {"login", "logout", "session-expired", "login-limited", "mfa-enrolled", "mfa-recovery", "mfa-limited", "password-reset"}:
                 title, detail = {
                     "login": ("Inicio de sesión", "Acceso al panel local"),
                     "logout": ("Cierre de sesión", "La sesión se cerró desde el panel"),
                     "session-expired": ("Sesión caducada", "Se alcanzó el límite de la sesión"),
                     "mfa-enrolled": ("Autenticador vinculado", "Se activó el segundo factor local"),
                     "mfa-recovery": ("Código de respaldo utilizado", "Se vinculó otro autenticador y se invalidaron los respaldos anteriores"),
+                    "password-reset": ("Contraseña restablecida", "Se cerraron las sesiones y se invalidaron los respaldos anteriores"),
                     "mfa-limited": ("Verificación limitada", "Se activó una espera de 30 segundos"),
                     "login-limited": ("Intentos de acceso limitados", "Se activó una espera de 30 segundos"),
                 }[operation]
@@ -228,6 +259,7 @@ class Store:
                 raise Invalid("Acción desconocida.")
             self.trim(state)
             self.write("state", state)
+            self.describe_profiles(state)
             return state
 
     @staticmethod
@@ -281,7 +313,15 @@ class Store:
             device = next((d for d in state["devices"] if d["id"] == alert.get("deviceId")), None)
             if not device or device["blocked"]:
                 raise Invalid("No se puede aislar este equipo desde esta alerta.")
-            device.update(blocked=True, traffic=0, incident=None, burstStreak=0)
+            instant = now()
+            device.update(blocked=True, traffic=0, incident=None, burstStreak=0, isolatedAt=instant)
+            rows = self.metrics()
+            start = alert.get("firstSeen", alert["timestamp"])
+            def readings(items):
+                return [[r["timestamp"], *r["devices"][device["id"]]] for r in items if device["id"] in r["devices"]][-12:]
+            alert["comparison"] = {"at": instant, "before": readings(r for r in rows if r["timestamp"] < start),
+                                   "during": readings(r for r in rows if start <= r["timestamp"] <= instant),
+                                   "after": []}
             new_status, title = "En revisión", "Equipo aislado en el gateway"
         elif action == "resolve" and status != "Resuelta" and note:
             new_status, title = "Resuelta", "Alerta resuelta"
@@ -335,7 +375,17 @@ class Store:
                 if device["status"] != "Conectado" or device["blocked"]:
                     continue
                 device.setdefault("profile", PROFILES[device["type"]].copy())
-                samples.append(simulated_reading(device, cycle, index))
+                reading = simulated_reading(device, cycle, index)
+                test = device.get("scenario")
+                if test:
+                    reading.update(traffic=0.2, messages=1, destination=device["profile"]["destinations"][0])
+                    if test["kind"] == "volume":
+                        reading["traffic"] = settings["threshold"] + 2
+                    elif test["kind"] == "destination":
+                        reading["destination"] = "203.0.113.77"
+                    else:
+                        reading["identityTest"] = "unknown"
+                samples.append(reading)
 
             # El detector consume las mismas lecturas que publica el simulador.
             received = transport(samples) if samples else []
@@ -353,18 +403,33 @@ class Store:
                 profile = device["profile"]
                 combined = sample["destination"] not in profile["destinations"] and sample["messages"] > profile["maxMessages"]
                 device["burstStreak"] = device.get("burstStreak", 0) + 1 if combined else 0
+                device["lastReadingAt"] = timestamp
                 device["traffic"] = sample["traffic"]
                 limit = volume_limit(device, settings["threshold"])
                 limits[device["id"]] = [limit, profile["maxMessages"]]
                 incident = detect(device, sample, limit)
                 if incident:
-                    flags.append(self.record_detection(state, device, sample, incident, timestamp, limit, cases))
+                    flag = self.record_detection(state, device, sample, incident, timestamp, limit, cases)
+                    flags.append(flag)
+                    if device.get("restoredAt") and not device.get("recurrenceAt"):
+                        device["recurrenceAt"] = timestamp
+                    test = device.pop("scenario", None)
+                    if test:
+                        self.event(state, "Prueba detectada", test["name"], device=device,
+                                   caseId=flag["caseId"], testId=test["id"])
+                        cases[(device["id"], incident[1])]["lastTest"] = test["name"]
                 else:
                     history = device.setdefault("normalVolumes", [])
                     history.append(sample["traffic"])
                     del history[:-36]
                     allowed.append(sample)
                 device["incident"] = incident[1] if incident else None
+            for alert in state["alerts"]:
+                comparison = alert.get("comparison")
+                if comparison and len(comparison["after"]) < 12:
+                    sample = by_id.get(alert["deviceId"])
+                    comparison["after"].append([timestamp, sample["traffic"] if sample else None,
+                                                sample["messages"] if sample else None])
 
             total = sum(sample["traffic"] for sample in received)
             sample_row = {
@@ -387,4 +452,5 @@ class Store:
                 state["lastSave"] = timestamp
             self.trim(state)
             self.write("state", state)
+            self.last_count = len(received)
             return allowed

@@ -10,8 +10,7 @@ if not npm:
     raise SystemExit("Instala Node.js antes de compilar el panel.")
 subprocess.run([npm, "ci"], cwd=root / "frontend", check=True)
 subprocess.run([npm, "run", "build"], cwd=root / "frontend", check=True)
-broker_assets = ["--add-data", "runtime/mosquitto:runtime/mosquitto"] if sys.platform == "win32" else []
 subprocess.run([
     sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--name", "IoTSentinel",
-    "--collect-all", "amqtt", "--add-data", "frontend/dist:frontend/dist", *broker_assets, "main.py",
+    "--collect-all", "amqtt", "--add-data", "frontend/dist:frontend/dist", "main.py",
 ], cwd=root, check=True)
