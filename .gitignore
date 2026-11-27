@@ -1,0 +1,11 @@
+/build/
+/dist/
+*.spec
+__pycache__/
+.venv/
+*.sqlite3
+
+*.key
+*.pem
+*.sqlite3-*
+red-cr3/
