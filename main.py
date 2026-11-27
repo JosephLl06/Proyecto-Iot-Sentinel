@@ -93,7 +93,7 @@ class Gateway:
     def login(self, data):
         email, password = data.get("email"), data.get("password")
         if not isinstance(email, str) or len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
-            raise Invalid("Ingresa un correo válido.")
+            raise Invalid("Ingresa un correo válido debe contenener @.")
         if not isinstance(password, str) or not 8 <= len(password) <= 128:
             raise Invalid("La contraseña debe tener entre 8 y 128 caracteres.")
         with self.store.lock, self.store.db:
@@ -139,7 +139,7 @@ class Gateway:
     def reset_password(self, data):
         email, password, recovery, code = (data.get(k) for k in ("email", "password", "recovery", "code"))
         if not all(isinstance(v, str) for v in (email, password, recovery, code)) or not 12 <= len(password) <= 128:
-            raise Invalid("Usa una nueva contraseña de 12 a 128 caracteres y completa los campos.")
+            raise Invalid("Usa una nueva contraseña de 12 a 24 caracteres y completa los campos.")
         with self.store.lock, self.store.db:
             moment = time.monotonic()
             if moment < self.factor_blocked_until:
